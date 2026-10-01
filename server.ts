@@ -420,7 +420,8 @@ app.get('/api/drivers', async (req, res) => {
       SELECT d.*,
              COUNT(DISTINCT s.id) as total_sessions,
              COUNT(DISTINCT CASE WHEN t.status = 'RECONCILED' THEN t.id END) as total_reconciled_pix_count,
-             COALESCE(SUM(CASE WHEN t.status = 'RECONCILED' THEN t.amount ELSE 0 END), 0) as total_reconciled_amount
+             COALESCE(SUM(CASE WHEN t.status = 'RECONCILED' THEN t.amount ELSE 0 END), 0) as total_reconciled_amount,
+             COALESCE(SUM(s.missing_amount), 0) as total_missing_amount
       FROM drivers d
       LEFT JOIN reconciliation_sessions s ON s.driver_id = d.id AND s.status = 'COMPLETED'
       LEFT JOIN transactions t ON t.driver_id = d.id AND t.status = 'RECONCILED'
@@ -2064,33 +2065,24 @@ app.get('/api/reports/driver-summary', async (req, res) => {
   try {
     const companyId = getCompanyId(req);
     const { start_date, end_date, driver_id } = req.query as Record<string, string>;
-    const conditions = ["t.status = 'RECONCILED'", "d.company_id = ?", "t.company_id = ?"];
-    const params: any[] = [companyId, companyId];
 
     const sessionConditions = ["company_id = ?", "status = 'COMPLETED'"];
     const sessionParams: any[] = [companyId];
 
     if (driver_id && driver_id !== 'ALL') {
-      conditions.push('d.id = ?');
-      params.push(driver_id);
       sessionConditions.push('driver_id = ?');
       sessionParams.push(driver_id);
     }
 
     if (start_date && start_date.trim() !== '') {
-      conditions.push('t.date >= ?');
-      params.push(start_date.trim());
       sessionConditions.push('date(COALESCE(completed_at, started_at)) >= date(?)');
       sessionParams.push(start_date.trim());
     }
     if (end_date && end_date.trim() !== '') {
-      conditions.push('t.date <= ?');
-      params.push(end_date.trim());
       sessionConditions.push('date(COALESCE(completed_at, started_at)) <= date(?)');
       sessionParams.push(end_date.trim());
     }
 
-    const whereClause = conditions.join(' AND ');
     const sessionWhere = sessionConditions.join(' AND ');
 
     const summary = await queryAll(`
@@ -2100,15 +2092,14 @@ app.get('/api/reports/driver-summary', async (req, res) => {
         d.name as driver_name,
         d.vehicle_plate,
         d.route,
-        COUNT(t.id) as total_pix_reconciled,
+        COUNT(DISTINCT t.id) as total_pix_reconciled,
         COALESCE(SUM(t.amount), 0) as total_amount_reconciled,
         COALESCE(sub.total_missing_amount, 0) as total_missing_amount,
-        COALESCE(sub.total_sessions_count, COUNT(DISTINCT t.session_id)) as total_sessions,
+        COALESCE(sub.total_sessions_count, 0) as total_sessions,
         MIN(t.date) as first_receipt_date,
         MAX(t.date) as last_receipt_date
       FROM drivers d
-      INNER JOIN transactions t ON t.driver_id = d.id
-      LEFT JOIN (
+      INNER JOIN (
         SELECT 
           driver_id, 
           COALESCE(SUM(missing_amount), 0) as total_missing_amount,
@@ -2117,10 +2108,12 @@ app.get('/api/reports/driver-summary', async (req, res) => {
         WHERE ${sessionWhere}
         GROUP BY driver_id
       ) sub ON sub.driver_id = d.id
-      WHERE ${whereClause}
+      LEFT JOIN reconciliation_sessions s ON s.driver_id = d.id AND s.status = 'COMPLETED'
+      LEFT JOIN transactions t ON t.session_id = s.id AND t.status = 'RECONCILED'
+      WHERE d.company_id = ? ${driver_id && driver_id !== 'ALL' ? 'AND d.id = ?' : ''}
       GROUP BY d.id
-      ORDER BY total_amount_reconciled DESC
-    `, [...sessionParams, ...params]);
+      ORDER BY (total_amount_reconciled + total_missing_amount) DESC
+    `, driver_id && driver_id !== 'ALL' ? [...sessionParams, companyId, driver_id] : [...sessionParams, companyId]);
 
     res.json(summary);
   } catch (err: any) {
