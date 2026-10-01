@@ -1295,27 +1295,105 @@ app.post('/api/transactions/unlink-return', async (req, res) => {
 app.get('/api/transactions/return-candidates/:debitId', async (req, res) => {
   try {
     const { debitId } = req.params;
+    const { q, start_date, end_date, bank, status_filter, mode, limit } = req.query as Record<string, string>;
+
     const debitTx = await queryOne(`SELECT * FROM transactions WHERE id = ?`, [debitId]);
     if (!debitTx) return res.status(404).json({ error: 'Débito não encontrado.' });
 
     const companyId = debitTx.company_id || getCompanyId(req);
 
-    // Look for credits:
-    // Priority 1: Exact same amount
-    // Priority 2: Other credits around same date or pending
+    // If searching across whole statement (mode === 'search' or any filter supplied)
+    if (mode === 'search' || q || start_date || end_date || bank || status_filter) {
+      const whereClauses: string[] = [
+        "company_id = ?",
+        "type = 'CREDIT'",
+        "id != ?"
+      ];
+      const params: any[] = [companyId, debitId];
+
+      if (status_filter && status_filter !== 'ALL') {
+        whereClauses.push("status = ?");
+        params.push(status_filter);
+      } else if (!status_filter) {
+        // Default to PENDING, or whatever is already linked
+        whereClauses.push("(status = 'PENDING' OR id = ?)");
+        params.push(debitTx.linked_tx_id || '');
+      }
+
+      if (bank && bank !== 'ALL') {
+        whereClauses.push("bank_name = ?");
+        params.push(bank);
+      }
+
+      if (start_date && start_date.trim() !== '') {
+        whereClauses.push("date >= ?");
+        params.push(start_date.trim());
+      }
+
+      if (end_date && end_date.trim() !== '') {
+        whereClauses.push("date <= ?");
+        params.push(end_date.trim());
+      }
+
+      if (q && q.trim() !== '') {
+        const rawQ = q.trim();
+        const cleanNum = rawQ.replace(/^r\$\s*/i, '').replace(/\./g, '').replace(',', '.').trim();
+        const parsedNum = parseFloat(cleanNum);
+        const searchPattern = `%${rawQ}%`;
+
+        if (!isNaN(parsedNum) && parsedNum > 0) {
+          whereClauses.push(
+            `(counterparty_name LIKE ? OR counterparty_doc LIKE ? OR description LIKE ? OR memo LIKE ? OR document_number LIKE ? OR fitid LIKE ? OR id LIKE ? OR ABS(amount - ?) < 0.01 OR ABS(COALESCE(original_amount, amount) - ?) < 0.01)`
+          );
+          params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, parsedNum, parsedNum);
+        } else {
+          whereClauses.push(
+            `(counterparty_name LIKE ? OR counterparty_doc LIKE ? OR description LIKE ? OR memo LIKE ? OR document_number LIKE ? OR fitid LIKE ? OR id LIKE ?)`
+          );
+          params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
+        }
+      }
+
+      const maxLimit = Math.min(250, parseInt(limit, 10) || 100);
+      const candidates = await queryAll(
+        `SELECT * FROM transactions 
+         WHERE ${whereClauses.join(' AND ')}
+         ORDER BY 
+           CASE WHEN amount = ? THEN 0 ELSE 1 END,
+           date DESC
+         LIMIT ?`,
+        [...params, debitTx.amount, maxLimit]
+      );
+
+      return res.json({
+        debitTx,
+        candidates,
+        isSearch: true
+      });
+    }
+
+    // Default 'suggested' candidates mode:
+    let namePattern = '';
+    if (debitTx.counterparty_name && debitTx.counterparty_name.trim().length > 3) {
+      namePattern = `%${debitTx.counterparty_name.trim()}%`;
+    }
+
     const candidates = await queryAll(
       `SELECT * FROM transactions 
        WHERE company_id = ? AND type = 'CREDIT' AND (status = 'PENDING' OR id = ?)
        ORDER BY 
          CASE WHEN amount = ? THEN 0 ELSE 1 END,
-         ABS(JULIANDAY(date) - JULIANDAY(?)) ASC
+         CASE WHEN ? != '' AND (counterparty_name LIKE ? OR description LIKE ?) THEN 0 ELSE 1 END,
+         ABS(JULIANDAY(date) - JULIANDAY(?)) ASC,
+         date DESC
        LIMIT 50`,
-      [companyId, debitTx.linked_tx_id || '', debitTx.amount, debitTx.date]
+      [companyId, debitTx.linked_tx_id || '', debitTx.amount, namePattern, namePattern, namePattern, debitTx.date]
     );
 
     res.json({
       debitTx,
-      candidates
+      candidates,
+      isSearch: false
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

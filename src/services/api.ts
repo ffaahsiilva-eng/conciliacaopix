@@ -407,8 +407,27 @@ export const api = {
     return json;
   },
 
-  async getReturnCandidates(debitId: string): Promise<{ debitTx: Transaction; candidates: Transaction[] }> {
-    const res = await customFetch(`/api/transactions/return-candidates/${debitId}`);
+  async getReturnCandidates(
+    debitId: string,
+    filters?: {
+      q?: string;
+      start_date?: string;
+      end_date?: string;
+      bank?: string;
+      status_filter?: string;
+      mode?: 'suggested' | 'search';
+    }
+  ): Promise<{ debitTx: Transaction; candidates: Transaction[]; isSearch?: boolean }> {
+    const params = new URLSearchParams();
+    if (filters?.q) params.append('q', filters.q);
+    if (filters?.start_date) params.append('start_date', filters.start_date);
+    if (filters?.end_date) params.append('end_date', filters.end_date);
+    if (filters?.bank && filters.bank !== 'ALL') params.append('bank', filters.bank);
+    if (filters?.status_filter && filters.status_filter !== 'ALL') params.append('status_filter', filters.status_filter);
+    if (filters?.mode) params.append('mode', filters.mode);
+
+    const qs = params.toString();
+    const res = await customFetch(`/api/transactions/return-candidates/${debitId}${qs ? `?${qs}` : ''}`);
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Falha ao buscar candidatos para devolução');
     return json;
