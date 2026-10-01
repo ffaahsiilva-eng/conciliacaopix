@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
-import { getDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool } from './server/db.js';
+import { getDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery } from './server/db.js';
 import { parseOfx, isBalanceLine } from './server/parsers/ofxParser.js';
 import { parseCsvStatement } from './server/parsers/csvParser.js';
 
@@ -2193,23 +2193,26 @@ app.get('/api/database/status', async (req, res) => {
     let lastCloudSqlSync = null;
 
     if (hasHost) {
-      const pool = getCloudSqlPool();
-      if (pool) {
-        try {
-          const result = await pool.query('SELECT updated_at FROM system_snapshots WHERE key = $1', ['main_db']);
+      try {
+        const result = await safeCloudSqlQuery<{ updated_at: string }>(
+          'SELECT updated_at FROM system_snapshots WHERE key = $1',
+          ['main_db'],
+          4000
+        );
+        if (result && result.rows.length > 0) {
           cloudSqlActive = true;
-          if (result.rows.length > 0) {
-            lastCloudSqlSync = result.rows[0].updated_at;
-          }
-        } catch (e) {
-          console.error('[CloudSQL Check Error]', e);
+          lastCloudSqlSync = result.rows[0].updated_at;
+        } else if (result) {
+          cloudSqlActive = true;
         }
+      } catch (e: any) {
+        console.warn('[CloudSQL Status] Instance warming up or unreachable:', e?.message || e);
       }
     }
 
     res.json({
       persistent: cloudSqlActive,
-      engine: cloudSqlActive ? 'Google Cloud SQL (PostgreSQL)' : 'Local Cache',
+      engine: cloudSqlActive ? 'Google Cloud SQL (PostgreSQL)' : 'Local Cache (Syncing to Cloud SQL)',
       cloudSqlActive,
       lastSync: lastCloudSqlSync,
       databaseName: process.env.SQL_DB_NAME || 'cloud_sql_development_database'

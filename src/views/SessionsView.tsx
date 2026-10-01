@@ -3,6 +3,8 @@ import { ReconciliationSession, Transaction, Driver } from '../types';
 import { api, formatCurrency, formatDateTime, formatPlate, formatDate } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useCompany } from '../context/CompanyContext';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import {
   FileSpreadsheet,
   Truck,
@@ -40,6 +42,7 @@ export const SessionsView: React.FC = () => {
     session: ReconciliationSession;
     transactions: Transaction[];
   } | null>(null);
+  const [txSearchInModal, setTxSearchInModal] = useState<string>('');
   const [loadingDetails, setLoadingDetails] = useState(false);
 
   // Single settlement deletion state (Admin only)
@@ -188,6 +191,115 @@ export const SessionsView: React.FC = () => {
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const handleGeneratePdf = () => {
+    if (!selectedSession) return;
+    const doc = new jsPDF();
+    const { session, transactions } = selectedSession;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.setTextColor(30, 41, 59);
+    doc.text('COMPROVANTE DE FECHAMENTO DE ACERTO', 14, 20);
+
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Protocolo: #${session.id} | Concluído em: ${formatDateTime(session.completed_at || session.started_at)}`, 14, 26);
+
+    doc.setDrawColor(226, 232, 240);
+    doc.line(14, 30, 196, 30);
+
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(14, 34, 182, 26, 2, 2, 'F');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('MOTORISTA:', 18, 42);
+    doc.text('OPERADOR:', 105, 42);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`${session.driver_name} (Placa: ${formatPlate(session.driver_plate)})`, 18, 48);
+    doc.text(`${session.operator_user_name}`, 105, 48);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(71, 85, 105);
+    doc.text('TOTAL PIX:', 18, 56);
+    doc.text('VALOR FALTANTE:', 105, 56);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(16, 185, 129);
+    doc.text(formatCurrency(session.total_amount), 40, 56);
+
+    doc.setTextColor(225, 29, 72);
+    doc.text(formatCurrency(session.missing_amount || 0), 138, 56);
+
+    let startY = 66;
+
+    if (session.notes) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(71, 85, 105);
+      doc.text('Observações:', 14, startY);
+      doc.setFont('helvetica', 'normal');
+      doc.text(session.notes, 14, startY + 5);
+      startY += 14;
+    }
+
+    const tableData = transactions.map((tx, idx) => [
+      idx + 1,
+      formatDate(tx.date),
+      tx.bank_name || '-',
+      tx.document_number || '-',
+      tx.voucher_number ? `#${tx.voucher_number}` : '-',
+      tx.description || '-',
+      formatCurrency(tx.amount)
+    ]);
+
+    autoTable(doc, {
+      startY: startY,
+      head: [['#', 'Data', 'Banco', 'Documento', 'Canhoto', 'Descrição', 'Valor (R$)']],
+      body: tableData,
+      theme: 'grid',
+      headStyles: { fillColor: [37, 99, 235], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9 },
+      bodyStyles: { fontSize: 8, textColor: [30, 41, 59] },
+      columnStyles: {
+        0: { cellWidth: 10 },
+        1: { cellWidth: 22 },
+        2: { cellWidth: 25 },
+        3: { cellWidth: 22 },
+        4: { cellWidth: 20 },
+        5: { cellWidth: 55 },
+        6: { cellWidth: 28, halign: 'right', fontStyle: 'bold' }
+      },
+      margin: { left: 14, right: 14 }
+    });
+
+    const finalY = (doc as any).lastAutoTable.finalY + 15;
+
+    doc.setDrawColor(148, 163, 184);
+    doc.line(25, finalY, 90, finalY);
+    doc.line(120, finalY, 185, finalY);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(51, 65, 85);
+    doc.text(session.driver_name, 57, finalY + 5, { align: 'center' });
+    doc.text(session.operator_user_name, 152, finalY + 5, { align: 'center' });
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    doc.text('Assinatura do Motorista', 57, finalY + 10, { align: 'center' });
+    doc.text('Assinatura do Operador / Caixa', 152, finalY + 10, { align: 'center' });
+
+    doc.save(`acerto_${session.driver_name.toLowerCase().replace(/\s+/g, '_')}_${session.id}.pdf`);
   };
 
   const totalConciliated = sessions.reduce((acc, s) => acc + (s.total_amount || 0), 0);
@@ -560,12 +672,12 @@ export const SessionsView: React.FC = () => {
 
       {/* SESSION DETAILS MODAL & PRINTABLE RECEIPT */}
       {selectedSession && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-3xl shadow-2xl text-slate-800 overflow-hidden my-8 animate-fade-in print-container">
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs p-2 sm:p-4 md:p-6 overflow-y-auto flex items-start justify-center">
+          <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl w-full max-w-4xl shadow-2xl text-slate-800 flex flex-col max-h-[92vh] sm:max-h-[90vh] my-auto overflow-hidden animate-fade-in print-container">
             {/* Modal Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 no-print">
+            <div className="shrink-0 flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 no-print">
               <div className="flex items-center space-x-3">
-                <div className="bg-blue-600 text-white p-2 rounded-xl">
+                <div className="bg-blue-600 text-white p-2.5 rounded-xl shadow-2xs">
                   <FileText className="w-5 h-5" />
                 </div>
                 <div>
@@ -594,14 +706,25 @@ export const SessionsView: React.FC = () => {
                   </button>
                 )}
                 <button
-                  onClick={handlePrint}
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center space-x-1 shadow-xs cursor-pointer"
+                  onClick={handleGeneratePdf}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center space-x-1 shadow-xs cursor-pointer transition-colors"
+                  title="Gerar PDF do acerto"
                 >
-                  <Printer className="w-3.5 h-3.5" />
-                  <span>Imprimir Comprovante</span>
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Gerar PDF</span>
                 </button>
                 <button
-                  onClick={() => setSelectedSession(null)}
+                  onClick={handlePrint}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center space-x-1 shadow-xs cursor-pointer transition-colors"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Imprimir</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setSelectedSession(null);
+                    setTxSearchInModal('');
+                  }}
                   className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
                 >
                   <X className="w-5 h-5" />
@@ -609,8 +732,8 @@ export const SessionsView: React.FC = () => {
               </div>
             </div>
 
-            {/* Receipt Content */}
-            <div className="p-6 space-y-4 text-xs">
+            {/* Receipt Content - Scrollable Body */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-4 text-xs">
               <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div>
                   <p className="text-[10px] text-slate-500 uppercase font-bold">Motorista</p>
@@ -673,37 +796,71 @@ export const SessionsView: React.FC = () => {
                 </div>
               )}
 
-              {/* Transactions List */}
-              <div>
-                <p className="font-bold text-slate-800 mb-2">
-                  Lançamentos Pix Conciliados nesta Sessão:
-                </p>
-                <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
-                  {selectedSession.transactions.map((tx) => (
-                    <div
-                      key={tx.id}
-                      className="p-3 bg-white flex items-center justify-between text-xs hover:bg-slate-50"
-                    >
-                      <div className="space-y-0.5 max-w-[70%]">
-                        <div className="flex items-center space-x-2">
-                          <span className="font-mono text-slate-500">{formatDate(tx.date)}</span>
-                          <span className="font-bold text-slate-900 truncate">{tx.description}</span>
+              {/* Transactions List with Search Filter */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <p className="font-bold text-slate-800">
+                    Lançamentos Pix Conciliados nesta Sessão ({selectedSession.transactions.length}):
+                  </p>
+                  <div className="relative w-64">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2" />
+                    <input
+                      type="text"
+                      value={txSearchInModal}
+                      onChange={(e) => setTxSearchInModal(e.target.value)}
+                      placeholder="Filtrar Pix por valor, banco, canhoto..."
+                      className="w-full pl-8 pr-3 py-1 bg-white border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs"
+                    />
+                    {txSearchInModal && (
+                      <button
+                        type="button"
+                        onClick={() => setTxSearchInModal('')}
+                        className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100 max-h-72 overflow-y-auto">
+                  {selectedSession.transactions
+                    .filter((tx) => {
+                      if (!txSearchInModal.trim()) return true;
+                      const q = txSearchInModal.toLowerCase().trim();
+                      return (
+                        tx.description.toLowerCase().includes(q) ||
+                        tx.bank_name.toLowerCase().includes(q) ||
+                        (tx.voucher_number && tx.voucher_number.toLowerCase().includes(q)) ||
+                        tx.amount.toString().includes(q) ||
+                        (tx.document_number && tx.document_number.toLowerCase().includes(q))
+                      );
+                    })
+                    .map((tx) => (
+                      <div
+                        key={tx.id}
+                        className="p-3 bg-white flex items-center justify-between text-xs hover:bg-slate-50 transition-colors"
+                      >
+                        <div className="space-y-0.5 max-w-[70%]">
+                          <div className="flex items-center space-x-2">
+                            <span className="font-mono text-slate-500">{formatDate(tx.date)}</span>
+                            <span className="font-bold text-slate-900 truncate">{tx.description}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 flex items-center gap-2 flex-wrap">
+                            <span>{tx.bank_name}</span>
+                            {tx.document_number && <span>• Doc: {tx.document_number}</span>}
+                            {tx.voucher_number && (
+                              <span className="text-blue-700 font-mono font-bold">
+                                • Canhoto #{tx.voucher_number}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <div className="text-[11px] text-slate-500 flex items-center gap-2">
-                          <span>{tx.bank_name}</span>
-                          {tx.document_number && <span>• Doc: {tx.document_number}</span>}
-                          {tx.voucher_number && (
-                            <span className="text-blue-700 font-mono font-bold">
-                              • Canhoto #{tx.voucher_number}
-                            </span>
-                          )}
+                        <div className="text-right font-mono font-extrabold text-emerald-600 text-sm">
+                          {formatCurrency(tx.amount)}
                         </div>
                       </div>
-                      <div className="text-right font-mono font-extrabold text-emerald-600 text-sm">
-                        {formatCurrency(tx.amount)}
-                      </div>
-                    </div>
-                  ))}
+                    ))}
                 </div>
               </div>
 
@@ -724,14 +881,29 @@ export const SessionsView: React.FC = () => {
               </div>
             </div>
 
-            {/* Footer */}
-            <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex justify-end no-print">
-              <button
-                onClick={() => setSelectedSession(null)}
-                className="bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold px-4 py-2 rounded-xl text-xs cursor-pointer"
-              >
-                Fechar
-              </button>
+            {/* Modal Footer - Sticky */}
+            <div className="shrink-0 px-6 py-3.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between no-print">
+              <span className="text-slate-500 font-medium">
+                Total de {selectedSession.transactions.length} comprovantes validados
+              </span>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={handleGeneratePdf}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3 py-1.5 rounded-xl text-xs cursor-pointer inline-flex items-center space-x-1 shadow-2xs transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Gerar PDF do Acerto</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setSelectedSession(null);
+                    setTxSearchInModal('');
+                  }}
+                  className="bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold px-4 py-1.5 rounded-xl text-xs cursor-pointer transition-colors"
+                >
+                  Fechar
+                </button>
+              </div>
             </div>
           </div>
         </div>

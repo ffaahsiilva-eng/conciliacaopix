@@ -67,9 +67,14 @@ function AppContent() {
   }, [currentCompany?.id, currentUser?.id]);
 
   useEffect(() => {
-    // Listen to real-time driver updates
+    // Listen to real-time driver updates, reconciliation completion, and database cleans/restores
     const unsubscribe = subscribeToRealtimeEvents((event) => {
-      if (event.type === 'DRIVERS_UPDATED' || event.type === 'RECONCILIATION_COMPLETED') {
+      if (
+        event.type === 'DRIVERS_UPDATED' ||
+        event.type === 'RECONCILIATION_COMPLETED' ||
+        event.type === 'DATABASE_CLEANED' ||
+        event.type === 'DATABASE_RESTORED'
+      ) {
         api.getDrivers().then(setDrivers).catch(console.error);
       }
     });

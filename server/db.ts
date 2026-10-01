@@ -22,12 +22,29 @@ export function getCloudSqlPool(): pg.Pool | null {
         user: process.env.SQL_USER,
         password: process.env.SQL_PASSWORD,
         database: process.env.SQL_DB_NAME || 'cloud_sql_development_database',
-        max: 10,
-        connectionTimeoutMillis: 20000,
-        idleTimeoutMillis: 30000,
+        max: 5,
+        connectionTimeoutMillis: 5000,
+        idleTimeoutMillis: 10000,
+        allowExitOnIdle: true,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 5000,
+        statement_timeout: 6000,
+        query_timeout: 6000,
       });
-      pgPool.on('error', (err) => {
-        console.error('[CloudSQL Pool Error]', err);
+
+      pgPool.on('error', (err: any) => {
+        const msg = err?.message || '';
+        if (
+          msg.includes('Connection terminated') ||
+          msg.includes('timeout') ||
+          err?.code === 'ECONNRESET' ||
+          err?.code === '57P01' ||
+          err?.code === 'ETIMEDOUT'
+        ) {
+          // Expected idle socket teardown by Cloud SQL scale-to-zero; pg purges the client
+          return;
+        }
+        console.warn('[CloudSQL Pool Notice]', msg);
       });
     }
     return pgPool;
@@ -35,36 +52,79 @@ export function getCloudSqlPool(): pg.Pool | null {
   return null;
 }
 
-export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
+export async function resetCloudSqlPool(): Promise<void> {
+  if (pgPool) {
+    const oldPool = pgPool;
+    pgPool = null;
+    try {
+      await oldPool.end();
+    } catch (_) {}
+  }
+}
+
+export async function safeCloudSqlQuery<T extends pg.QueryResultRow = any>(
+  text: string,
+  params?: any[],
+  timeoutMs = 5000
+): Promise<pg.QueryResult<T> | null> {
   const pool = getCloudSqlPool();
   if (!pool) return null;
+
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const res = await pool.query<{ data: string }>(
-        `SELECT data FROM system_snapshots WHERE key = 'main_db'`
+      const queryPromise = pool.query<T>(text, params);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Cloud SQL query timed out')), timeoutMs)
       );
-      if (res.rows.length > 0 && res.rows[0]?.data) {
-        const buf = Buffer.from(res.rows[0].data, 'base64');
-        if (buf.length > 0) {
-          console.log(`[CloudSQL] Loaded database snapshot (${buf.length} bytes) from Google Cloud SQL.`);
-          return buf;
-        }
+      return await Promise.race([queryPromise, timeoutPromise]);
+    } catch (err: any) {
+      const msg = err?.message || '';
+      const isConnectionIssue =
+        msg.includes('Connection terminated') ||
+        msg.includes('timed out') ||
+        msg.includes('timeout') ||
+        err?.code === 'ECONNRESET' ||
+        err?.code === '57P01' ||
+        err?.code === 'ETIMEDOUT';
+
+      if (isConnectionIssue) {
+        await resetCloudSqlPool();
       }
+
+      if (attempt === 1 && isConnectionIssue) {
+        await new Promise((r) => setTimeout(r, 600));
+        continue;
+      }
+
+      console.warn(`[CloudSQL Query] Transient issue (${attempt}/2):`, msg);
       return null;
-    } catch (err) {
-      console.warn(`[CloudSQL] Attempt ${attempt} failed to read snapshot from Cloud SQL:`, err);
-      if (attempt === 1) {
-        await new Promise((r) => setTimeout(r, 2000));
-      }
     }
   }
   return null;
 }
 
-export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
-  const pool = getCloudSqlPool();
-  if (!pool) return;
+export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
+  try {
+    const res = await safeCloudSqlQuery<{ data: string }>(
+      `SELECT data FROM system_snapshots WHERE key = 'main_db'`,
+      undefined,
+      6000
+    );
+    if (res && res.rows.length > 0 && res.rows[0]?.data) {
+      const buf = Buffer.from(res.rows[0].data, 'base64');
+      if (buf.length > 0) {
+        console.log(`[CloudSQL] Loaded database snapshot (${buf.length} bytes) from Google Cloud SQL.`);
+        return buf;
+      }
+    }
+    return null;
+  } catch (err: any) {
+    console.warn('[CloudSQL] Could not load snapshot from Cloud SQL:', err?.message || err);
+    return null;
+  }
+}
 
+export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
   if (isSavingToCloudSql) {
     pendingSaveBuffer = buffer;
     return;
@@ -73,14 +133,15 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
   isSavingToCloudSql = true;
   try {
     const b64 = buffer.toString('base64');
-    await pool.query(
+    await safeCloudSqlQuery(
       `INSERT INTO system_snapshots (key, data, updated_at) 
        VALUES ('main_db', $1, NOW()) 
        ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-      [b64]
+      [b64],
+      8000
     );
-  } catch (err) {
-    console.error('[CloudSQL] Error writing snapshot to Cloud SQL:', err);
+  } catch (err: any) {
+    console.warn('[CloudSQL] Warning persisting snapshot to Cloud SQL:', err?.message || err);
   } finally {
     isSavingToCloudSql = false;
     if (pendingSaveBuffer) {
