@@ -25,7 +25,7 @@ import { SwitchUserModal } from './SwitchUserModal';
 import { BackupModal } from './BackupModal';
 
 interface TopHeaderProps {
-  currentTab: 'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users';
+  currentTab: 'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users' | 'backup';
   onOpenUpload: () => void;
   onOpenStartSession: () => void;
   toggleSidebar: () => void;
@@ -74,6 +74,11 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
         return {
           title: 'Relatórios Gerenciais & Auditoria',
           subtitle: `Totalizadores e conformidade da ${currentCompany.name}`
+        };
+      case 'backup':
+        return {
+          title: 'Backup & Restauração de Dados',
+          subtitle: 'Segurança diária, exportação de arquivos e recuperação na nuvem'
         };
       case 'users':
         return {

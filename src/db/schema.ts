@@ -92,6 +92,7 @@ export const reconciliation_sessions = pgTable('reconciliation_sessions', {
   completed_at: timestamp('completed_at'),
   total_items: integer('total_items').default(0),
   total_amount: real('total_amount').default(0),
+  missing_amount: real('missing_amount').default(0),
   general_voucher: text('general_voucher'),
   notes: text('notes'),
 });

@@ -303,6 +303,7 @@ function initSchema(db: Database): void {
       completed_at TEXT,
       total_items INTEGER NOT NULL DEFAULT 0,
       total_amount REAL NOT NULL DEFAULT 0,
+      missing_amount REAL NOT NULL DEFAULT 0,
       notes TEXT
     );
 
@@ -485,6 +486,18 @@ function initSchema(db: Database): void {
   } catch (_) {}
   try {
     db.run(`ALTER TABLE reconciliation_sessions ADD COLUMN company_id TEXT NOT NULL DEFAULT 'matriz'`);
+  } catch (_) {}
+  try {
+    db.run(`ALTER TABLE reconciliation_sessions ADD COLUMN general_voucher TEXT`);
+  } catch (_) {}
+  try {
+    db.run(`ALTER TABLE reconciliation_sessions ADD COLUMN missing_amount REAL DEFAULT 0`);
+  } catch (_) {}
+  try {
+    db.run(`ALTER TABLE drivers ADD COLUMN total_sessions INTEGER DEFAULT 0`);
+  } catch (_) {}
+  try {
+    db.run(`ALTER TABLE drivers ADD COLUMN total_amount_reconciled REAL DEFAULT 0`);
   } catch (_) {}
   try {
     db.run(`ALTER TABLE audit_logs ADD COLUMN company_id TEXT NOT NULL DEFAULT 'matriz'`);

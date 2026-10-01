@@ -10,6 +10,7 @@ interface ReconciliationSessionContextType {
   voucherNumbers: Record<string, string>;
   generalVoucher: string;
   sessionNotes: string;
+  missingAmount: number;
   isSessionActive: boolean;
   selectedTransactions: Transaction[];
   totalSelectedAmount: number;
@@ -20,11 +21,13 @@ interface ReconciliationSessionContextType {
   setVoucherForTx: (txId: string, voucher: string) => void;
   setGeneralVoucher: (val: string) => void;
   setSessionNotes: (val: string) => void;
+  setMissingAmount: (val: number) => void;
   finishSession: () => Promise<{
     sessionId: string;
     driverName: string;
     itemCount: number;
     totalAmount: number;
+    missingAmount?: number;
   }>;
   cancelSession: () => void;
   isSubmitting: boolean;
@@ -41,6 +44,7 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
   const [voucherNumbers, setVoucherNumbers] = useState<Record<string, string>>({});
   const [generalVoucher, setGeneralVoucher] = useState<string>('');
   const [sessionNotes, setSessionNotes] = useState<string>('');
+  const [missingAmount, setMissingAmount] = useState<number>(0);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   const startSession = async (driver: Driver, notes?: string) => {
@@ -55,6 +59,7 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
       setVoucherNumbers({});
       setGeneralVoucher('');
       setSessionNotes(notes || '');
+      setMissingAmount(0);
     } finally {
       setIsSubmitting(false);
     }
@@ -122,6 +127,7 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
     setVoucherNumbers({});
     setGeneralVoucher('');
     setSessionNotes('');
+    setMissingAmount(0);
   };
 
   const finishSession = async () => {
@@ -137,6 +143,7 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
         transaction_ids: selectedTxIds,
         voucher_numbers: voucherNumbers,
         general_voucher: generalVoucher,
+        missing_amount: missingAmount,
         notes: sessionNotes,
         actorUser: currentUser
       });
@@ -161,6 +168,7 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
         voucherNumbers,
         generalVoucher,
         sessionNotes,
+        missingAmount,
         isSessionActive: !!activeDriver,
         selectedTransactions,
         totalSelectedAmount,
@@ -171,6 +179,7 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
         setVoucherForTx,
         setGeneralVoucher,
         setSessionNotes,
+        setMissingAmount,
         finishSession,
         cancelSession,
         isSubmitting

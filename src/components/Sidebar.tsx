@@ -17,13 +17,14 @@ import {
   UserCheck,
   Building2,
   Store,
-  ArrowLeftRight
+  ArrowLeftRight,
+  Database
 } from 'lucide-react';
 import { formatPlate } from '../services/api';
 
 interface SidebarProps {
-  currentTab: 'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users';
-  setCurrentTab: (tab: 'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users') => void;
+  currentTab: 'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users' | 'backup';
+  setCurrentTab: (tab: 'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users' | 'backup') => void;
   isCollapsed: boolean;
   setIsCollapsed: (val: boolean) => void;
   onOpenUpload: () => void;
@@ -79,6 +80,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       shortLabel: 'Relatórios',
       icon: BarChart3,
       description: 'Totais e conformidade'
+    },
+    {
+      id: 'backup' as const,
+      label: 'Backup & Restauração',
+      shortLabel: 'Backup',
+      icon: Database,
+      description: 'Salvar e restaurar dados'
     },
     {
       id: 'users' as const,

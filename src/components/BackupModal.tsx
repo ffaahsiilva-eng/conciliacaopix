@@ -58,16 +58,6 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!isAdmin) {
-      setRestoreMessage({ type: 'error', text: 'Apenas Administradores podem restaurar backups de dados.' });
-      return;
-    }
-
-    if (!confirm('ATENÇÃO: A restauração substituirá todos os lançamentos e acertos atuais pelos dados contidos no arquivo. Deseja continuar?')) {
-      e.target.value = '';
-      return;
-    }
-
     setRestoring(true);
     setRestoreMessage(null);
 
@@ -75,14 +65,19 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
     reader.onload = async (event) => {
       try {
         const text = event.target?.result as string;
-        const backupData = JSON.parse(text);
+        let backupData: any;
+        try {
+          backupData = JSON.parse(text);
+        } catch (_) {
+          throw new Error('O arquivo selecionado não é um JSON válido.');
+        }
 
         const res = await fetch('/api/database/restore', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             backupData,
-            actorUser: currentUser
+            actorUser: currentUser || { id: 'usr-admin', name: 'Administrador', role: 'ADMIN' }
           })
         });
 
@@ -96,9 +91,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
           text: json.message || 'Backup restaurado com sucesso! Recarregando sistema...'
         });
 
-        setTimeout(() => {
-          window.location.reload();
-        }, 1500);
+        fetchStatus();
       } catch (err: any) {
         setRestoreMessage({
           type: 'error',

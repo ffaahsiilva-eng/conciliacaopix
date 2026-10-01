@@ -121,6 +121,7 @@ export interface ReconciliationSession {
   completed_at?: string;
   total_items: number;
   total_amount: number;
+  missing_amount?: number;
   notes?: string;
 }
 

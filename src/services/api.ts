@@ -477,6 +477,7 @@ export const api = {
     transaction_ids: string[];
     voucher_numbers?: Record<string, string>;
     general_voucher?: string;
+    missing_amount?: number;
     notes?: string;
     actorUser: User;
     company_id?: string;
@@ -486,6 +487,7 @@ export const api = {
     driverName: string;
     itemCount: number;
     totalAmount: number;
+    missingAmount?: number;
   }> {
     const res = await customFetch('/api/reconciliation/finish-session', {
       method: 'POST',
@@ -552,10 +554,11 @@ export const api = {
   },
 
   // Reports
-  async getDriverSummaryReport(startDate?: string, endDate?: string): Promise<any[]> {
+  async getDriverSummaryReport(startDate?: string, endDate?: string, driverId?: string): Promise<any[]> {
     const q = new URLSearchParams();
     if (startDate) q.append('start_date', startDate);
     if (endDate) q.append('end_date', endDate);
+    if (driverId && driverId !== 'ALL') q.append('driver_id', driverId);
     const res = await customFetch(`/api/reports/driver-summary?${q.toString()}`);
     if (!res.ok) throw new Error('Falha ao gerar relatório por motorista');
     return res.json();
@@ -567,8 +570,13 @@ export const api = {
     return res.json();
   },
 
-  async getAuditLogs(): Promise<AuditLog[]> {
-    const res = await customFetch('/api/reports/audit');
+  async getAuditLogs(filters?: { startDate?: string; endDate?: string; action?: string; search?: string }): Promise<AuditLog[]> {
+    const q = new URLSearchParams();
+    if (filters?.startDate) q.append('start_date', filters.startDate);
+    if (filters?.endDate) q.append('end_date', filters.endDate);
+    if (filters?.action && filters.action !== 'ALL') q.append('action', filters.action);
+    if (filters?.search) q.append('search', filters.search);
+    const res = await customFetch(`/api/reports/audit?${q.toString()}`);
     if (!res.ok) throw new Error('Falha ao carregar registros de auditoria');
     return res.json();
   }

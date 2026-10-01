@@ -161,7 +161,7 @@ export const SessionsView: React.FC = () => {
   const exportSessionsCsv = () => {
     if (sessions.length === 0) return;
 
-    const headers = ['ID Acerto', 'Data Conclusao', 'Motorista', 'Placa', 'Operador', 'Qtd Pix', 'Valor Total (R$)', 'Observacoes'];
+    const headers = ['ID Acerto', 'Data Conclusao', 'Motorista', 'Placa', 'Operador', 'Qtd Pix', 'Total Pix (R$)', 'Valor Faltante (R$)', 'Total Prestacao (R$)', 'Observacoes'];
     const rows = sessions.map((s) => [
       s.id,
       formatDateTime(s.completed_at || s.started_at),
@@ -170,6 +170,8 @@ export const SessionsView: React.FC = () => {
       `"${s.operator_user_name.replace(/"/g, '""')}"`,
       s.total_items,
       (s.total_amount || 0).toFixed(2),
+      (s.missing_amount || 0).toFixed(2),
+      ((s.total_amount || 0) + (s.missing_amount || 0)).toFixed(2),
       `"${(s.notes || '').replace(/"/g, '""')}"`
     ]);
 
@@ -189,7 +191,9 @@ export const SessionsView: React.FC = () => {
   };
 
   const totalConciliated = sessions.reduce((acc, s) => acc + (s.total_amount || 0), 0);
+  const totalMissing = sessions.reduce((acc, s) => acc + (s.missing_amount || 0), 0);
   const totalItemsCount = sessions.reduce((acc, s) => acc + (s.total_items || 0), 0);
+  const sessionsWithMissing = sessions.filter((s) => (s.missing_amount || 0) > 0).length;
 
   return (
     <div className="space-y-6">
@@ -210,7 +214,7 @@ export const SessionsView: React.FC = () => {
       )}
 
       {/* Metrics Bar (Dynamically calculated based on filters) */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs flex items-center justify-between">
           <div>
             <p className="text-xs text-slate-500 font-bold">
@@ -229,7 +233,7 @@ export const SessionsView: React.FC = () => {
         <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs flex items-center justify-between">
           <div>
             <p className="text-xs text-slate-500 font-bold">
-              {hasActiveFilters ? 'Total do Período / Motorista' : 'Total Geral Conciliado'}
+              {hasActiveFilters ? 'Total do Período' : 'Total Pix Conciliado'}
             </p>
             <p className="text-2xl font-extrabold text-emerald-600 mt-1">
               {formatCurrency(totalConciliated)}
@@ -240,6 +244,29 @@ export const SessionsView: React.FC = () => {
           </div>
           <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-100 flex items-center justify-center">
             <CheckCircle2 className="w-6 h-6" />
+          </div>
+        </div>
+
+        <div className={`border rounded-2xl p-4 shadow-xs flex items-center justify-between ${
+          totalMissing > 0 ? 'bg-amber-50/70 border-amber-300' : 'bg-white border-slate-200'
+        }`}>
+          <div>
+            <p className="text-xs text-slate-500 font-bold">
+              {hasActiveFilters ? 'Faltante no Período' : 'Valor Geral Faltante'}
+            </p>
+            <p className={`text-2xl font-extrabold mt-1 ${totalMissing > 0 ? 'text-red-600' : 'text-slate-800'}`}>
+              {formatCurrency(totalMissing)}
+            </p>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              {sessionsWithMissing > 0
+                ? `${sessionsWithMissing} acerto(s) com pendência`
+                : 'Nenhum débito pendente'}
+            </p>
+          </div>
+          <div className={`w-12 h-12 rounded-xl border flex items-center justify-center ${
+            totalMissing > 0 ? 'bg-red-100 text-red-600 border-red-200' : 'bg-slate-100 text-slate-500 border-slate-200'
+          }`}>
+            <AlertTriangle className="w-6 h-6" />
           </div>
         </div>
 
@@ -446,7 +473,9 @@ export const SessionsView: React.FC = () => {
                   <th className="py-3.5 px-4">Placa Veículo</th>
                   <th className="py-3.5 px-4">Operador Responsável</th>
                   <th className="py-3.5 px-4 text-center">Qtd. Pix</th>
-                  <th className="py-3.5 px-4 text-right">Valor Total</th>
+                  <th className="py-3.5 px-4 text-right">Total Pix</th>
+                  <th className="py-3.5 px-4 text-right">Valor Faltante</th>
+                  <th className="py-3.5 px-4 text-right">Total Prestação</th>
                   <th className="py-3.5 px-4">Observações</th>
                   <th className="py-3.5 px-4 text-center">Ações</th>
                 </tr>
@@ -476,8 +505,21 @@ export const SessionsView: React.FC = () => {
                         {s.total_items}
                       </span>
                     </td>
-                    <td className="py-3.5 px-4 text-right font-mono font-extrabold text-emerald-600 text-sm whitespace-nowrap">
+                    <td className="py-3.5 px-4 text-right font-mono font-extrabold text-emerald-600 text-xs whitespace-nowrap">
                       {formatCurrency(s.total_amount)}
+                    </td>
+                    <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                      {s.missing_amount && s.missing_amount > 0 ? (
+                        <span className="inline-flex items-center gap-1 font-mono font-bold text-red-600 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full text-xs">
+                          <AlertTriangle className="w-3 h-3 text-red-500 shrink-0" />
+                          {formatCurrency(s.missing_amount)}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 font-mono text-xs">R$ 0,00</span>
+                      )}
+                    </td>
+                    <td className="py-3.5 px-4 text-right font-mono font-extrabold text-slate-900 text-xs whitespace-nowrap">
+                      {formatCurrency((s.total_amount || 0) + (s.missing_amount || 0))}
                     </td>
                     <td className="py-3.5 px-4 text-slate-500 max-w-xs truncate">
                       {s.notes || '-'}
@@ -569,7 +611,7 @@ export const SessionsView: React.FC = () => {
 
             {/* Receipt Content */}
             <div className="p-6 space-y-4 text-xs">
-              <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div>
                   <p className="text-[10px] text-slate-500 uppercase font-bold">Motorista</p>
                   <p className="text-sm font-bold text-slate-900 mt-0.5">
@@ -592,12 +634,37 @@ export const SessionsView: React.FC = () => {
                   </p>
                 </div>
                 <div>
-                  <p className="text-[10px] text-slate-500 uppercase font-bold">Valor Total Acertado</p>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold">Total Pix</p>
                   <p className="text-base font-extrabold text-emerald-600 mt-0.5">
                     {formatCurrency(selectedSession.session.total_amount)}
                   </p>
                 </div>
+                <div>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold">Valor Faltante</p>
+                  <p className={`text-base font-extrabold mt-0.5 ${
+                    (selectedSession.session.missing_amount || 0) > 0 ? 'text-red-600' : 'text-slate-400'
+                  }`}>
+                    {formatCurrency(selectedSession.session.missing_amount || 0)}
+                  </p>
+                </div>
               </div>
+
+              {(selectedSession.session.missing_amount || 0) > 0 && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between text-xs">
+                  <div className="flex items-center space-x-2 text-red-800 font-bold">
+                    <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                    <span>Prestação com Débito / Valor Faltante:</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="font-mono font-extrabold text-red-700 text-sm">
+                      {formatCurrency(selectedSession.session.missing_amount || 0)}
+                    </span>
+                    <span className="text-slate-500 ml-2">
+                      (Prestação Total Esperada: {formatCurrency((selectedSession.session.total_amount || 0) + (selectedSession.session.missing_amount || 0))})
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {selectedSession.session.notes && (
                 <div className="bg-slate-50 border border-slate-200 p-3 rounded-xl">

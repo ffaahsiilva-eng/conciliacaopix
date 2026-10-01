@@ -16,6 +16,7 @@ import { SessionsView } from './views/SessionsView';
 import { BatchesView } from './views/BatchesView';
 import { ReportsView } from './views/ReportsView';
 import { UsersView } from './views/UsersView';
+import { BackupView } from './views/BackupView';
 import { BankAccount, Driver, Transaction } from './types';
 import { api, formatCurrency, subscribeToRealtimeEvents } from './services/api';
 import { CheckCircle2, Truck, X } from 'lucide-react';
@@ -24,7 +25,7 @@ import { LoginScreen } from './components/LoginScreen';
 function AppContent() {
   const { currentUser, loading: authLoading } = useAuth();
   const { currentCompany } = useCompany();
-  const [currentTab, setCurrentTab] = useState<'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users'>('conciliation');
+  const [currentTab, setCurrentTab] = useState<'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users' | 'backup'>('conciliation');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [banks, setBanks] = useState<BankAccount[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -43,6 +44,7 @@ function AppContent() {
     driverName: string;
     itemCount: number;
     totalAmount: number;
+    missingAmount?: number;
   } | null>(null);
 
   const fetchAuxData = async () => {
@@ -94,11 +96,12 @@ function AppContent() {
     setReopenModalOpen(true);
   };
 
-  const handleFinishSuccess = (data: { driverName: string; itemCount: number; totalAmount: number }) => {
+  const handleFinishSuccess = (data: { driverName: string; itemCount: number; totalAmount: number; missingAmount?: number }) => {
     setCompletedNotification({
       driverName: data.driverName,
       itemCount: data.itemCount,
-      totalAmount: data.totalAmount
+      totalAmount: data.totalAmount,
+      missingAmount: data.missingAmount
     });
   };
 
@@ -160,6 +163,11 @@ function AppContent() {
                       {formatCurrency(completedNotification.totalAmount)}
                     </strong>{' '}
                     para o motorista <strong>{completedNotification.driverName}</strong>.
+                    {completedNotification.missingAmount && completedNotification.missingAmount > 0 ? (
+                      <span className="ml-2 inline-flex items-center gap-1 bg-amber-400 text-slate-950 font-bold px-2 py-0.5 rounded-full text-[11px] shadow-xs">
+                        ⚠️ Falta na prestação: {formatCurrency(completedNotification.missingAmount)}
+                      </span>
+                    ) : null}
                   </p>
                 </div>
               </div>
@@ -213,6 +221,10 @@ function AppContent() {
           )}
 
           {currentTab === 'reports' && <ReportsView />}
+
+          {currentTab === 'backup' && (
+            <BackupView onNavigateToConciliation={() => setCurrentTab('conciliation')} />
+          )}
 
           {currentTab === 'users' && <UsersView />}
         </main>

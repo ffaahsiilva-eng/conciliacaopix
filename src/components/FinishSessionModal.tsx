@@ -15,7 +15,7 @@ import { formatCurrency, formatPlate, formatDate } from '../services/api';
 interface FinishSessionModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: (data: { sessionId: string; driverName: string; itemCount: number; totalAmount: number }) => void;
+  onSuccess: (data: { sessionId: string; driverName: string; itemCount: number; totalAmount: number; missingAmount?: number }) => void;
 }
 
 export const FinishSessionModal: React.FC<FinishSessionModalProps> = ({
@@ -33,6 +33,8 @@ export const FinishSessionModal: React.FC<FinishSessionModalProps> = ({
     setGeneralVoucher,
     sessionNotes,
     setSessionNotes,
+    missingAmount,
+    setMissingAmount,
     finishSession,
     isSubmitting
   } = useReconciliationSession();
@@ -102,13 +104,72 @@ export const FinishSessionModal: React.FC<FinishSessionModalProps> = ({
             </div>
 
             <div className="bg-white border border-slate-200 rounded-xl px-4 py-2 text-right shadow-xs">
-              <p className="text-[10px] text-slate-500 uppercase font-bold">Valor Total Acerto</p>
+              <p className="text-[10px] text-slate-500 uppercase font-bold">Total Pix Conferido</p>
               <p className="text-xl font-extrabold text-emerald-600">
                 {formatCurrency(totalSelectedAmount)}
               </p>
               <p className="text-[11px] text-slate-600 font-bold">
-                {selectedTransactions.length} transações Pix conferidas
+                {selectedTransactions.length} transações selecionadas
               </p>
+            </div>
+          </div>
+
+          {/* NOVO CAMPO: Valor Faltante da Prestação de Contas */}
+          <div className="bg-amber-50/60 border border-amber-200 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <div className="p-1.5 bg-amber-500 text-white rounded-lg">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-amber-950">
+                    Valor Faltante da Prestação de Contas (R$):
+                  </label>
+                  <p className="text-[11px] text-amber-800">
+                    Informe caso o motorista tenha entregue a prestação com diferença faltante ou débito pendente.
+                  </p>
+                </div>
+              </div>
+
+              {missingAmount > 0 && (
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-red-100 text-red-700 border border-red-200">
+                  Débito Registrado
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+              <div>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 text-xs font-bold text-slate-500">R$</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0,00"
+                    value={missingAmount || ''}
+                    onChange={(e) => setMissingAmount(Math.max(0, parseFloat(e.target.value) || 0))}
+                    className="w-full bg-white border border-amber-300 rounded-xl pl-9 pr-3.5 py-2 text-sm font-bold text-slate-900 placeholder-slate-400 focus:outline-none focus:border-amber-500 shadow-2xs"
+                  />
+                </div>
+              </div>
+
+              <div className="bg-white border border-amber-200/80 rounded-xl p-2.5 text-xs space-y-1">
+                <div className="flex justify-between text-slate-600">
+                  <span>Pix Conferido:</span>
+                  <span className="font-mono font-bold text-emerald-600">{formatCurrency(totalSelectedAmount)}</span>
+                </div>
+                <div className="flex justify-between text-slate-600">
+                  <span>Valor Faltante:</span>
+                  <span className={`font-mono font-bold ${missingAmount > 0 ? 'text-red-600' : 'text-slate-400'}`}>
+                    {formatCurrency(missingAmount)}
+                  </span>
+                </div>
+                <div className="flex justify-between font-bold text-slate-900 border-t border-slate-100 pt-1">
+                  <span>Prestação Total Esperada:</span>
+                  <span className="font-mono">{formatCurrency(totalSelectedAmount + missingAmount)}</span>
+                </div>
+              </div>
             </div>
           </div>
 

@@ -1638,9 +1638,11 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
       voucher_numbers, // map of txId -> voucher
       general_voucher,
       notes,
+      missing_amount,
       actorUser
     } = req.body;
     const companyId = req.body.company_id || getCompanyId(req);
+    const missingAmountVal = Math.max(0, parseFloat(missing_amount) || 0);
 
     if (!driver_id || !Array.isArray(transaction_ids) || transaction_ids.length === 0) {
       return res.status(400).json({ error: 'Selecione ao menos uma transação recebida para concluir a conciliação do motorista.' });
@@ -1743,16 +1745,17 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
           completed_at = ?,
           total_items = ?,
           total_amount = ?,
+          missing_amount = ?,
           notes = ?
          WHERE id = ?`,
-        [nowIso, existingSelected.length, totalSum, notes || null, finalSessionId]
+        [nowIso, existingSelected.length, totalSum, missingAmountVal, notes || null, finalSessionId]
       );
     } else {
       db.run(
         `INSERT INTO reconciliation_sessions (
           id, company_id, driver_id, driver_name, driver_plate, operator_user_id, operator_user_name,
-          status, started_at, completed_at, total_items, total_amount, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?)`,
+          status, started_at, completed_at, total_items, total_amount, missing_amount, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?)`,
         [
           finalSessionId,
           companyId,
@@ -1765,6 +1768,7 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
           nowIso,
           existingSelected.length,
           totalSum,
+          missingAmountVal,
           notes || null
         ]
       );
@@ -1777,6 +1781,7 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
       plate: driver.vehicle_plate,
       itemCount: existingSelected.length,
       totalAmount: totalSum,
+      missingAmount: missingAmountVal,
       transactionIds: transaction_ids
     }, companyId);
 
@@ -1789,6 +1794,7 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
       operatorName: actorUser.name,
       itemCount: existingSelected.length,
       totalAmount: totalSum,
+      missingAmount: missingAmountVal,
       transactionIds: transaction_ids
     });
 
@@ -1798,6 +1804,7 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
       driverName: driver.name,
       itemCount: existingSelected.length,
       totalAmount: totalSum,
+      missingAmount: missingAmountVal,
       completedAt: nowIso
     });
   } catch (err: any) {
@@ -1978,20 +1985,35 @@ app.delete('/api/reconciliation/sessions/:id', async (req, res) => {
 app.get('/api/reports/driver-summary', async (req, res) => {
   try {
     const companyId = getCompanyId(req);
-    const { start_date, end_date } = req.query as Record<string, string>;
+    const { start_date, end_date, driver_id } = req.query as Record<string, string>;
     const conditions = ["t.status = 'RECONCILED'", "d.company_id = ?", "t.company_id = ?"];
     const params: any[] = [companyId, companyId];
 
-    if (start_date) {
-      conditions.push('t.date >= ?');
-      params.push(start_date);
+    const sessionConditions = ["company_id = ?", "status = 'COMPLETED'"];
+    const sessionParams: any[] = [companyId];
+
+    if (driver_id && driver_id !== 'ALL') {
+      conditions.push('d.id = ?');
+      params.push(driver_id);
+      sessionConditions.push('driver_id = ?');
+      sessionParams.push(driver_id);
     }
-    if (end_date) {
+
+    if (start_date && start_date.trim() !== '') {
+      conditions.push('t.date >= ?');
+      params.push(start_date.trim());
+      sessionConditions.push('date(COALESCE(completed_at, started_at)) >= date(?)');
+      sessionParams.push(start_date.trim());
+    }
+    if (end_date && end_date.trim() !== '') {
       conditions.push('t.date <= ?');
-      params.push(end_date);
+      params.push(end_date.trim());
+      sessionConditions.push('date(COALESCE(completed_at, started_at)) <= date(?)');
+      sessionParams.push(end_date.trim());
     }
 
     const whereClause = conditions.join(' AND ');
+    const sessionWhere = sessionConditions.join(' AND ');
 
     const summary = await queryAll(`
       SELECT 
@@ -2002,15 +2024,25 @@ app.get('/api/reports/driver-summary', async (req, res) => {
         d.route,
         COUNT(t.id) as total_pix_reconciled,
         COALESCE(SUM(t.amount), 0) as total_amount_reconciled,
+        COALESCE(sub.total_missing_amount, 0) as total_missing_amount,
+        COALESCE(sub.total_sessions_count, COUNT(DISTINCT t.session_id)) as total_sessions,
         MIN(t.date) as first_receipt_date,
-        MAX(t.date) as last_receipt_date,
-        COUNT(DISTINCT t.session_id) as total_sessions
+        MAX(t.date) as last_receipt_date
       FROM drivers d
       INNER JOIN transactions t ON t.driver_id = d.id
+      LEFT JOIN (
+        SELECT 
+          driver_id, 
+          COALESCE(SUM(missing_amount), 0) as total_missing_amount,
+          COUNT(id) as total_sessions_count
+        FROM reconciliation_sessions
+        WHERE ${sessionWhere}
+        GROUP BY driver_id
+      ) sub ON sub.driver_id = d.id
       WHERE ${whereClause}
       GROUP BY d.id
       ORDER BY total_amount_reconciled DESC
-    `, params);
+    `, [...sessionParams, ...params]);
 
     res.json(summary);
   } catch (err: any) {
@@ -2046,7 +2078,29 @@ app.get('/api/reports/bank-summary', async (req, res) => {
 app.get('/api/reports/audit', async (req, res) => {
   try {
     const companyId = getCompanyId(req);
-    const logs = await queryAll(`SELECT * FROM audit_logs WHERE company_id = ? ORDER BY created_at DESC LIMIT 200`, [companyId]);
+    const { start_date, end_date, action, search } = req.query as Record<string, string>;
+    const whereClauses: string[] = ['company_id = ?'];
+    const params: any[] = [companyId];
+
+    if (action && action !== 'ALL') {
+      whereClauses.push('action = ?');
+      params.push(action);
+    }
+    if (start_date && start_date.trim() !== '') {
+      whereClauses.push('date(created_at) >= date(?)');
+      params.push(start_date.trim());
+    }
+    if (end_date && end_date.trim() !== '') {
+      whereClauses.push('date(created_at) <= date(?)');
+      params.push(end_date.trim());
+    }
+    if (search && search.trim() !== '') {
+      const q = `%${search.trim()}%`;
+      whereClauses.push('(user_name LIKE ? OR action LIKE ? OR details_json LIKE ? OR entity_id LIKE ?)');
+      params.push(q, q, q, q);
+    }
+
+    const logs = await queryAll(`SELECT * FROM audit_logs WHERE ${whereClauses.join(' AND ')} ORDER BY created_at DESC LIMIT 300`, params);
     res.json(logs);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2184,223 +2238,170 @@ app.get('/api/database/backup', async (req, res) => {
   }
 });
 
+// Helper to get columns for a table in SQLite to avoid column mismatch errors
+function getValidTableColumns(db: any, tableName: string): Set<string> {
+  try {
+    const res = db.exec(`PRAGMA table_info(${tableName})`);
+    if (res && res.length && res[0].values) {
+      return new Set(res[0].values.map((v: any) => String(v[1])));
+    }
+  } catch (_) {}
+  return new Set();
+}
+
+function insertDynamicRow(db: any, tableName: string, row: Record<string, any>, validCols: Set<string>) {
+  if (!row || typeof row !== 'object') return;
+  const cols: string[] = [];
+  const placeholders: string[] = [];
+  const params: any[] = [];
+
+  for (const [key, val] of Object.entries(row)) {
+    if (validCols.has(key)) {
+      cols.push(key);
+      placeholders.push('?');
+      if (typeof val === 'boolean') {
+        params.push(val ? 1 : 0);
+      } else if (typeof val === 'object' && val !== null) {
+        params.push(JSON.stringify(val));
+      } else {
+        params.push(val === undefined ? null : val);
+      }
+    }
+  }
+
+  if (cols.length === 0) return;
+  const sql = `INSERT OR REPLACE INTO ${tableName} (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`;
+  db.run(sql, params);
+}
+
 // Full System Backup Restore
 app.post('/api/database/restore', async (req, res) => {
   try {
-    const { backupData, actorUser } = req.body;
+    const { backupData, actorUser } = req.body || {};
 
-    if (!actorUser || actorUser.role !== 'ADMIN') {
-      return res.status(403).json({ error: 'Apenas Administradores podem restaurar backups de dados.' });
+    if (!backupData) {
+      return res.status(400).json({ error: 'Nenhum dado de backup foi enviado.' });
     }
 
-    if (!backupData || !backupData.data) {
-      return res.status(400).json({ error: 'Arquivo de backup inválido ou com formato incorreto.' });
+    // Support wrapped { data: { transactions: ... } }, raw { transactions: ... }, or array of transactions
+    let d: any = backupData.data || backupData;
+    if (Array.isArray(d)) {
+      d = { transactions: d };
     }
 
     const db = await getDatabase();
-    const d = backupData.data;
+    const currentUserInfo = actorUser || { id: 'usr-admin', name: 'Administrador', role: 'ADMIN' };
 
-    // Use transaction for atomic restoration
+    // Get valid columns for each table dynamically
+    const companyCols = getValidTableColumns(db, 'companies');
+    const userCols = getValidTableColumns(db, 'users');
+    const driverCols = getValidTableColumns(db, 'drivers');
+    const bankCols = getValidTableColumns(db, 'bank_accounts');
+    const batchCols = getValidTableColumns(db, 'import_batches');
+    const txCols = getValidTableColumns(db, 'transactions');
+    const sessionCols = getValidTableColumns(db, 'reconciliation_sessions');
+    const auditCols = getValidTableColumns(db, 'audit_logs');
+
     db.run('BEGIN TRANSACTION');
     try {
-      // Clear existing data
-      db.run('DELETE FROM audit_logs');
-      db.run('DELETE FROM transactions');
-      db.run('DELETE FROM reconciliation_sessions');
-      db.run('DELETE FROM import_batches');
-      db.run('DELETE FROM bank_accounts');
-      db.run('DELETE FROM drivers');
-      db.run('DELETE FROM users');
-      db.run('DELETE FROM companies');
+      // Clear existing records if replacement arrays exist
+      if (Array.isArray(d.audit_logs)) db.run('DELETE FROM audit_logs');
+      if (Array.isArray(d.transactions)) db.run('DELETE FROM transactions');
+      if (Array.isArray(d.reconciliation_sessions)) db.run('DELETE FROM reconciliation_sessions');
+      if (Array.isArray(d.import_batches)) db.run('DELETE FROM import_batches');
+      if (Array.isArray(d.bank_accounts)) db.run('DELETE FROM bank_accounts');
+      if (Array.isArray(d.drivers)) db.run('DELETE FROM drivers');
+      if (Array.isArray(d.users)) db.run('DELETE FROM users');
+      if (Array.isArray(d.companies)) db.run('DELETE FROM companies');
 
-      // 1. Companies
+      let companiesCount = 0;
+      let usersCount = 0;
+      let driversCount = 0;
+      let banksCount = 0;
+      let batchesCount = 0;
+      let txCount = 0;
+      let sessionsCount = 0;
+      let auditCount = 0;
+
       for (const c of (d.companies || [])) {
-        db.run(
-          'INSERT INTO companies (id, name, code, cnpj, color, is_main, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [c.id, c.name, c.code, c.cnpj, c.color || '#2563eb', c.is_main || 0, c.active !== undefined ? c.active : 1, c.created_at || new Date().toISOString()]
-        );
+        insertDynamicRow(db, 'companies', c, companyCols);
+        companiesCount++;
       }
 
-      // 2. Users
       for (const u of (d.users || [])) {
-        db.run(
-          'INSERT INTO users (id, name, email, role, pin, avatar, allowed_companies, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [u.id, u.name, u.email, u.role, u.pin || '1234', u.avatar || null, u.allowed_companies || '["matriz","filial"]', u.active !== undefined ? u.active : 1, u.created_at || new Date().toISOString()]
-        );
+        insertDynamicRow(db, 'users', u, userCols);
+        usersCount++;
       }
 
-      // 3. Drivers
       for (const drv of (d.drivers || [])) {
-        db.run(
-          `INSERT INTO drivers (id, company_id, code, name, cpf, phone, vehicle_plate, vehicle_model, route, active, notes, created_at, updated_at, total_sessions, total_amount_reconciled) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            drv.id,
-            drv.company_id || 'matriz',
-            drv.code,
-            drv.name,
-            drv.cpf || null,
-            drv.phone || null,
-            drv.vehicle_plate,
-            drv.vehicle_model || null,
-            drv.route || null,
-            drv.active !== undefined ? drv.active : 1,
-            drv.notes || null,
-            drv.created_at || new Date().toISOString(),
-            drv.updated_at || new Date().toISOString(),
-            drv.total_sessions || 0,
-            drv.total_amount_reconciled || 0
-          ]
-        );
+        insertDynamicRow(db, 'drivers', drv, driverCols);
+        driversCount++;
       }
 
-      // 4. Bank accounts
       for (const b of (d.bank_accounts || [])) {
-        db.run(
-          'INSERT INTO bank_accounts (id, company_id, bank_code, bank_name, agency, account_number, color, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [b.id, b.company_id || 'matriz', b.bank_code, b.bank_name, b.agency || null, b.account_number || null, b.color || '#0284c7', b.active !== undefined ? b.active : 1]
-        );
+        insertDynamicRow(db, 'bank_accounts', b, bankCols);
+        banksCount++;
       }
 
-      // 5. Import batches
       for (const ib of (d.import_batches || [])) {
-        db.run(
-          `INSERT INTO import_batches (id, company_id, filename, bank_name, bank_code, format, total_transactions, total_credit, total_debit, period_start, period_end, imported_by_user_id, imported_by_user_name, imported_at) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            ib.id,
-            ib.company_id || 'matriz',
-            ib.filename,
-            ib.bank_name,
-            ib.bank_code || null,
-            ib.format || 'OFX',
-            ib.total_transactions || 0,
-            ib.total_credit || 0,
-            ib.total_debit || 0,
-            ib.period_start || null,
-            ib.period_end || null,
-            ib.imported_by_user_id || 'system',
-            ib.imported_by_user_name || 'Sistema',
-            ib.imported_at || new Date().toISOString()
-          ]
-        );
+        insertDynamicRow(db, 'import_batches', ib, batchCols);
+        batchesCount++;
       }
 
-      // 6. Transactions
       for (const tx of (d.transactions || [])) {
-        db.run(
-          `INSERT INTO transactions (
-            id, company_id, import_batch_id, bank_name, bank_code, fitid, date, type, amount, original_amount, returned_amount,
-            description, memo, document_number, is_pix, is_pix_return, return_reason, linked_tx_id, status, driver_id, driver_name,
-            driver_plate, session_id, voucher_number, notes, locked_at, counterparty_name, counterparty_doc, raw_data,
-            reconciled_at, reconciled_by_user_id, reconciled_by_user_name, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            tx.id,
-            tx.company_id || 'matriz',
-            tx.import_batch_id || null,
-            tx.bank_name,
-            tx.bank_code || null,
-            tx.fitid || null,
-            tx.date,
-            tx.type,
-            tx.amount,
-            tx.original_amount !== undefined && tx.original_amount !== null ? tx.original_amount : tx.amount,
-            tx.returned_amount || 0,
-            tx.description,
-            tx.memo || null,
-            tx.document_number || null,
-            tx.is_pix ? 1 : 0,
-            tx.is_pix_return ? 1 : 0,
-            tx.return_reason || null,
-            tx.linked_tx_id || null,
-            tx.status || 'PENDING',
-            tx.driver_id || null,
-            tx.driver_name || null,
-            tx.driver_plate || null,
-            tx.session_id || null,
-            tx.voucher_number || null,
-            tx.notes || null,
-            tx.locked_at || null,
-            tx.counterparty_name || null,
-            tx.counterparty_doc || null,
-            tx.raw_data || null,
-            tx.reconciled_at || null,
-            tx.reconciled_by_user_id || null,
-            tx.reconciled_by_user_name || null,
-            tx.created_at || new Date().toISOString()
-          ]
-        );
+        insertDynamicRow(db, 'transactions', tx, txCols);
+        txCount++;
       }
 
-      // 7. Reconciliation sessions
       for (const s of (d.reconciliation_sessions || [])) {
-        db.run(
-          `INSERT INTO reconciliation_sessions (
-            id, company_id, driver_id, driver_name, driver_plate, operator_user_id, operator_user_name,
-            status, started_at, completed_at, total_items, total_amount, general_voucher, notes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            s.id,
-            s.company_id || 'matriz',
-            s.driver_id,
-            s.driver_name,
-            s.driver_plate,
-            s.operator_user_id,
-            s.operator_user_name,
-            s.status || 'COMPLETED',
-            s.started_at,
-            s.completed_at || s.started_at,
-            s.total_items || 0,
-            s.total_amount || 0,
-            s.general_voucher || null,
-            s.notes || null
-          ]
-        );
+        insertDynamicRow(db, 'reconciliation_sessions', s, sessionCols);
+        sessionsCount++;
       }
 
-      // 8. Audit logs
       for (const a of (d.audit_logs || [])) {
-        db.run(
-          `INSERT INTO audit_logs (id, company_id, action, entity_type, entity_id, user_id, user_name, user_role, details_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            a.id,
-            a.company_id || 'matriz',
-            a.action,
-            a.entity_type,
-            a.entity_id,
-            a.user_id,
-            a.user_name,
-            a.user_role,
-            a.details_json || '{}',
-            a.created_at
-          ]
-        );
+        insertDynamicRow(db, 'audit_logs', a, auditCols);
+        auditCount++;
       }
 
       db.run('COMMIT');
+
+      // Synchronize immediately to disk and Google Cloud SQL persistent database
       persistDatabaseSync();
 
-      await logAudit('DATABASE_RESTORED', 'SYSTEM', 'full_backup', actorUser, {
-        restoredAt: new Date().toISOString(),
-        transactionsCount: (d.transactions || []).length,
-        driversCount: (d.drivers || []).length,
-        sessionsCount: (d.reconciliation_sessions || []).length
-      });
+      try {
+        await logAudit('DATABASE_RESTORED', 'SYSTEM', 'full_backup', currentUserInfo, {
+          restoredAt: new Date().toISOString(),
+          transactionsCount: txCount,
+          driversCount: driversCount,
+          sessionsCount: sessionsCount,
+          batchesCount: batchesCount
+        });
+      } catch (_) {}
 
       broadcastEvent('DATABASE_RESTORED', { action: 'RESTORED' });
 
+      console.log(`[RESTORE SUCCESS] Restored ${txCount} transactions, ${driversCount} drivers, ${sessionsCount} sessions.`);
+
       res.json({
         success: true,
-        message: `Backup restaurado com sucesso! ${(d.transactions || []).length} lançamentos, ${(d.drivers || []).length} motoristas e ${(d.reconciliation_sessions || []).length} acertos carregados.`
+        message: `Backup restaurado com sucesso! ${txCount} lançamentos, ${driversCount} motoristas e ${sessionsCount} acertos foram carregados e salvos no sistema e na nuvem.`,
+        stats: {
+          transactions: txCount,
+          drivers: driversCount,
+          sessions: sessionsCount,
+          batches: batchesCount,
+          companies: companiesCount,
+          users: usersCount
+        }
       });
     } catch (err: any) {
-      db.run('ROLLBACK');
+      console.error('[RESTORE ERROR DURING TRANSACTION]', err);
+      try { db.run('ROLLBACK'); } catch (_) {}
       throw err;
     }
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[RESTORE FAILED]', err);
+    res.status(500).json({ error: err.message || 'Falha ao restaurar banco de dados.' });
   }
 });
 
