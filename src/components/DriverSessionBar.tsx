@@ -106,12 +106,7 @@ export const DriverSessionBar: React.FC<DriverSessionBarProps> = ({ onOpenFinish
 
             <button
               onClick={onOpenFinishModal}
-              disabled={selectedTxIds.length === 0}
-              className={`flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-md transition-all ${
-                selectedTxIds.length > 0
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/30 cursor-pointer'
-                  : 'bg-slate-200 text-slate-400 border border-slate-200 cursor-not-allowed'
-              }`}
+              className="flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-md transition-all bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/30 cursor-pointer"
             >
               <CheckCheck className="w-4 h-4" />
               <span>Finalizar & Encerrar ({selectedTxIds.length})</span>

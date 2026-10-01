@@ -1722,8 +1722,8 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
     const companyId = req.body.company_id || getCompanyId(req);
     const missingAmountVal = Math.max(0, parseFloat(missing_amount) || 0);
 
-    if (!driver_id || !Array.isArray(transaction_ids) || transaction_ids.length === 0) {
-      return res.status(400).json({ error: 'Selecione ao menos uma transação recebida para concluir a conciliação do motorista.' });
+    if (!driver_id || !Array.isArray(transaction_ids)) {
+      return res.status(400).json({ error: 'Dados da sessão inválidos.' });
     }
 
     if (!actorUser) {

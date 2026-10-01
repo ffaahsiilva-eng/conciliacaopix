@@ -257,6 +257,13 @@ export const FinishSessionModal: React.FC<FinishSessionModalProps> = ({
               <span>{errorMsg}</span>
             </div>
           )}
+
+          {selectedTransactions.length === 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center space-x-2 text-xs text-amber-800">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>Nenhum Pix selecionado. O acerto será fechado registrando o valor faltante informado.</span>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -270,9 +277,9 @@ export const FinishSessionModal: React.FC<FinishSessionModalProps> = ({
 
           <button
             onClick={handleFinish}
-            disabled={isSubmitting || selectedTransactions.length === 0}
+            disabled={isSubmitting || (selectedTransactions.length === 0 && missingAmount <= 0)}
             className={`flex items-center space-x-2 px-6 py-2.5 rounded-xl text-xs font-bold shadow-xs transition-all ${
-              !isSubmitting && selectedTransactions.length > 0
+              !isSubmitting && (selectedTransactions.length > 0 || missingAmount > 0)
                 ? 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
                 : 'bg-slate-200 text-slate-400 border border-slate-200 cursor-not-allowed'
             }`}

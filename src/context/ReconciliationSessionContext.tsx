@@ -132,7 +132,6 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
 
   const finishSession = async () => {
     if (!activeDriver) throw new Error('Nenhum motorista ativo na sessão.');
-    if (selectedTxIds.length === 0) throw new Error('Selecione ao menos uma transação recebida para conciliar.');
     if (!currentUser) throw new Error('Usuário não autenticado.');
 
     try {
