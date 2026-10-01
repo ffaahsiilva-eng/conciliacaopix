@@ -1,0 +1,6 @@
+{
+  "name": "ConciliaPix - Sistema Integrado de Conciliação Bancária & Motoristas",
+  "description": "Sistema robusto de conciliação bancária em tempo real com importação de extratos OFX/CSV multi-bancos, vinculação a motoristas, travas antifraude e controle de permissões.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
