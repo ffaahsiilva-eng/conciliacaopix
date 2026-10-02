@@ -82,13 +82,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       description: 'Totais e conformidade'
     },
     {
-      id: 'backup' as const,
-      label: 'Backup & Restauração',
-      shortLabel: 'Backup',
-      icon: Database,
-      description: 'Salvar e restaurar dados'
-    },
-    {
       id: 'users' as const,
       label: 'Controle de Usuários',
       shortLabel: 'Usuários',

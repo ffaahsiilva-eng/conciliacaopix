@@ -116,7 +116,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
             </div>
             <div>
               <h3 className="font-bold text-sm tracking-tight">Persistência & Backup de Dados</h3>
-              <p className="text-[11px] text-slate-400">Armazenamento em Nuvem Google Cloud SQL</p>
+              <p className="text-[11px] text-slate-400">Armazenamento em Nuvem Supabase (Nuvem)</p>
             </div>
           </div>
           <button
@@ -138,12 +138,12 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
               </span>
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                {dbStatus?.cloudSqlActive ? 'Google Cloud SQL Ativo' : 'Conectando à Nuvem...'}
+                {dbStatus?.cloudSqlActive ? 'Supabase (Nuvem) Ativo' : 'Conectando à Nuvem...'}
               </span>
             </div>
 
             <p className="text-xs text-slate-600">
-              Todos os lançamentos, motoristas, acertos e logs são gravados de forma segura e <strong>permanente no Google Cloud SQL</strong>. Seus dados nunca mais serão perdidos em reinicializações.
+              Todos os lançamentos, motoristas, acertos e logs são gravados de forma segura e <strong>permanente no Supabase (Nuvem)</strong>. Seus dados nunca mais serão perdidos em reinicializações.
             </p>
 
             {dbStatus?.lastSync && (
@@ -172,7 +172,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
           )}
 
           {/* Action cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3">
             {/* Download Backup */}
             <div className="p-4 bg-blue-50/60 border border-blue-200 rounded-xl space-y-2 flex flex-col justify-between">
               <div>
@@ -195,7 +195,8 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
               </button>
             </div>
 
-            {/* Restore Backup */}
+            {/* Restore Backup (OCULTADO) */}
+            {false && (
             <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2 flex flex-col justify-between">
               <div>
                 <div className="flex items-center gap-1.5 text-slate-900 font-bold text-xs">
@@ -219,6 +220,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
                 />
               </label>
             </div>
+            )}
           </div>
         </div>
 

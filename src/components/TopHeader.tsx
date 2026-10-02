@@ -182,13 +182,13 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             <button
               onClick={() => setBackupModalOpen(true)}
               className="hidden xl:flex items-center space-x-2 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-colors"
-              title="Google Cloud SQL PostgreSQL Ativo - Clique para gerenciar backups"
+              title="Supabase (Nuvem) PostgreSQL Ativo - Clique para gerenciar backups"
             >
               <span className="flex h-2 w-2 relative">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
               </span>
-              <span className="font-semibold text-emerald-800">Cloud SQL Conectado</span>
+              <span className="font-semibold text-emerald-800">Conectado</span>
             </button>
 
             {/* Quick Buttons */}

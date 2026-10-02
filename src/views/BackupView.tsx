@@ -225,11 +225,11 @@ export const BackupView: React.FC<BackupViewProps> = ({ onNavigateToConciliation
               <h2 className="text-base font-bold text-slate-900">Backup & Restauração de Dados</h2>
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Google Cloud SQL Ativo
+                Supabase (Nuvem) Ativo
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-1 max-w-2xl leading-relaxed">
-              Realize o backup ao final de cada dia ou após conciliar seus lançamentos para salvar uma cópia física segura no seu dispositivo. Caso precise reiniciar ou transferir dados, utilize o campo de restauração.
+              O sistema <strong>sincroniza automaticamente</strong> todos os seus dados com o Cloud SQL em <strong>tempo real</strong> a cada nova movimentação, sem precisar da sua intervenção. Se quiser uma cópia física apenas para segurança local, você pode usar a opção abaixo.
             </p>
           </div>
         </div>
@@ -245,7 +245,7 @@ export const BackupView: React.FC<BackupViewProps> = ({ onNavigateToConciliation
       </div>
 
       {/* Main Two Requested Fields: Realizar Backup & Restaurar Backup */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:max-w-4xl gap-6">
         {/* ========================================================================= */}
         {/* CAMPO 1: REALIZAR BACKUP */}
         {/* ========================================================================= */}
@@ -320,8 +320,9 @@ export const BackupView: React.FC<BackupViewProps> = ({ onNavigateToConciliation
         </div>
 
         {/* ========================================================================= */}
-        {/* CAMPO 2: RESTAURAR BACKUP */}
+        {/* CAMPO 2: RESTAURAR BACKUP (OCULTADO) */}
         {/* ========================================================================= */}
+        {false && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs flex flex-col justify-between relative overflow-hidden">
           <div className="space-y-4">
             <div className="flex items-center space-x-3">
@@ -476,6 +477,7 @@ export const BackupView: React.FC<BackupViewProps> = ({ onNavigateToConciliation
             </p>
           </div>
         </div>
+        )}
       </div>
 
       {/* Current System Records Summary */}
