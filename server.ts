@@ -20,9 +20,9 @@ app.use('/api', async (req, res, next) => {
   try {
     await getDatabase();
     next();
-  } catch (err) {
+  } catch (err: any) {
     console.error('[VERCEL DB INIT ERROR]', err);
-    res.status(500).json({ error: 'Failed to initialize database on Vercel' });
+    res.status(500).json({ error: 'Failed to initialize database on Vercel', details: err?.message, stack: err?.stack });
   }
 });
 
