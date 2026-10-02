@@ -9,6 +9,7 @@ const DB_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DB_DIR, 'conciliapix.sqlite');
 
 let dbInstance: Database | null = null;
+let dbInitPromise: Promise<Database> | null = null;
 let saveDebounceTimer: NodeJS.Timeout | null = null;
 let pgPool: pg.Pool | null = null;
 let isSavingToCloudSql = false;
@@ -23,13 +24,13 @@ export function getCloudSqlPool(): pg.Pool | null {
         password: process.env.SQL_PASSWORD,
         database: process.env.SQL_DB_NAME || 'cloud_sql_development_database',
         max: 5,
-        connectionTimeoutMillis: 5000,
-        idleTimeoutMillis: 10000,
+        connectionTimeoutMillis: 20000, // 20s to allow Cloud SQL scale-to-zero to wake up
+        idleTimeoutMillis: 30000,
         allowExitOnIdle: true,
         keepAlive: true,
         keepAliveInitialDelayMillis: 5000,
-        statement_timeout: 6000,
-        query_timeout: 6000,
+        statement_timeout: 45000,
+        query_timeout: 45000,
       });
 
       pgPool.on('error', (err: any) => {
@@ -65,12 +66,12 @@ export async function resetCloudSqlPool(): Promise<void> {
 export async function safeCloudSqlQuery<T extends pg.QueryResultRow = any>(
   text: string,
   params?: any[],
-  timeoutMs = 5000
+  timeoutMs = 30000
 ): Promise<pg.QueryResult<T> | null> {
   const pool = getCloudSqlPool();
   if (!pool) return null;
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const queryPromise = pool.query<T>(text, params);
       const timeoutPromise = new Promise<never>((_, reject) =>
@@ -91,12 +92,14 @@ export async function safeCloudSqlQuery<T extends pg.QueryResultRow = any>(
         await resetCloudSqlPool();
       }
 
-      if (attempt === 1 && isConnectionIssue) {
-        await new Promise((r) => setTimeout(r, 600));
+      if (attempt < 3 && isConnectionIssue) {
+        const backoffMs = attempt * 1500;
+        console.log(`[CloudSQL] Waiting ${backoffMs}ms for database to respond (attempt ${attempt}/3)...`);
+        await new Promise((r) => setTimeout(r, backoffMs));
         continue;
       }
 
-      console.warn(`[CloudSQL Query] Transient issue (${attempt}/2):`, msg);
+      console.warn(`[CloudSQL Query] Transient issue (${attempt}/3):`, msg);
       return null;
     }
   }
@@ -104,24 +107,36 @@ export async function safeCloudSqlQuery<T extends pg.QueryResultRow = any>(
 }
 
 export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
-  try {
-    const res = await safeCloudSqlQuery<{ data: string }>(
-      `SELECT data FROM system_snapshots WHERE key = 'main_db'`,
-      undefined,
-      6000
-    );
-    if (res && res.rows.length > 0 && res.rows[0]?.data) {
-      const buf = Buffer.from(res.rows[0].data, 'base64');
-      if (buf.length > 0) {
-        console.log(`[CloudSQL] Loaded database snapshot (${buf.length} bytes) from Google Cloud SQL.`);
-        return buf;
+  // Try up to 4 times with backoff to handle cold start when Cloud SQL is spinning up from scale-to-zero
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const res = await safeCloudSqlQuery<{ data: string }>(
+        `SELECT data FROM system_snapshots WHERE key = 'main_db'`,
+        undefined,
+        35000
+      );
+      if (res && res.rows.length > 0 && res.rows[0]?.data) {
+        const buf = Buffer.from(res.rows[0].data, 'base64');
+        if (buf.length > 0) {
+          console.log(`[CloudSQL] Loaded database snapshot (${buf.length} bytes) from Google Cloud SQL.`);
+          return buf;
+        }
       }
+      if (res && res.rows.length === 0) {
+        // Table exists and query succeeded, but no snapshot row yet
+        console.log('[CloudSQL] Connected to Cloud SQL; no existing snapshot row found.');
+        return null;
+      }
+    } catch (err: any) {
+      console.warn(`[CloudSQL] Attempt ${attempt}/4 could not load snapshot:`, err?.message || err);
     }
-    return null;
-  } catch (err: any) {
-    console.warn('[CloudSQL] Could not load snapshot from Cloud SQL:', err?.message || err);
-    return null;
+
+    if (attempt < 4) {
+      console.log(`[CloudSQL] Cold start detected; retrying Cloud SQL connection in 2s (attempt ${attempt}/4)...`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
   }
+  return null;
 }
 
 export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
@@ -132,13 +147,48 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
 
   isSavingToCloudSql = true;
   try {
+    // SAFETY SHIELD: Before overwriting main_db, check the size of the existing snapshot
+    const checkRes = await safeCloudSqlQuery<{ len: number }>(
+      `SELECT length(data) as len FROM system_snapshots WHERE key = 'main_db'`,
+      undefined,
+      15000
+    );
+    const existingLen = Number(checkRes?.rows?.[0]?.len || 0);
+
+    // If an existing database snapshot had substantial data (>500KB base64, ~375KB sqlite)
+    // and the new buffer is an empty blank database (<300KB), REFUSE to overwrite main_db!
+    if (existingLen > 500000 && buffer.length < 300000) {
+      console.error(
+        `[CloudSQL SAFETY SHIELD] BLOCKED overwrite! Cloud SQL has a healthy snapshot of ${existingLen} bytes, but current buffer is only ${buffer.length} bytes. Saving to emergency backup instead of overwriting.`
+      );
+      await safeCloudSqlQuery(
+        `INSERT INTO system_snapshots (key, data, updated_at) 
+         VALUES ('main_db_emergency_backup', $1, NOW()) 
+         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [buffer.toString('base64')],
+        15000
+      );
+      return;
+    }
+
     const b64 = buffer.toString('base64');
+
+    // 1. Primary snapshot save
     await safeCloudSqlQuery(
       `INSERT INTO system_snapshots (key, data, updated_at) 
        VALUES ('main_db', $1, NOW()) 
        ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
       [b64],
-      8000
+      20000
+    );
+
+    // 2. Rolling backup copy in Cloud SQL for safety
+    await safeCloudSqlQuery(
+      `INSERT INTO system_snapshots (key, data, updated_at) 
+       VALUES ('main_db_backup', $1, NOW()) 
+       ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+      [b64],
+      20000
     );
   } catch (err: any) {
     console.warn('[CloudSQL] Warning persisting snapshot to Cloud SQL:', err?.message || err);
@@ -156,52 +206,65 @@ export async function getDatabase(): Promise<Database> {
   if (dbInstance) {
     return dbInstance;
   }
-
-  if (!fs.existsSync(DB_DIR)) {
-    fs.mkdirSync(DB_DIR, { recursive: true });
+  if (dbInitPromise) {
+    return dbInitPromise;
   }
 
-  const init = typeof initSqlJs === 'function' ? initSqlJs : (initSqlJs as any)?.default || initSqlJs;
-  const SQL = await init();
-
-  let instance: Database | undefined;
-
-  // 1. Try restoring from Cloud SQL permanent persistent storage first!
-  try {
-    const cloudBuffer = await loadSnapshotFromCloudSql();
-    if (cloudBuffer && cloudBuffer.length > 0) {
-      instance = new SQL.Database(cloudBuffer);
-      try {
-        fs.writeFileSync(DB_FILE, cloudBuffer);
-      } catch (_) {}
-      console.log('[DB] Database successfully restored from Cloud SQL permanent storage.');
+  dbInitPromise = (async () => {
+    if (!fs.existsSync(DB_DIR)) {
+      fs.mkdirSync(DB_DIR, { recursive: true });
     }
-  } catch (err) {
-    console.error('[DB] Failed restoring from Cloud SQL:', err);
-  }
 
-  // 2. Try restoring from local cached file
-  if (!instance && fs.existsSync(DB_FILE)) {
+    const init = typeof initSqlJs === 'function' ? initSqlJs : (initSqlJs as any)?.default || initSqlJs;
+    const SQL = await init();
+
+    let instance: Database | undefined;
+
+    // 1. Try restoring from Cloud SQL permanent persistent storage first!
     try {
-      const fileBuffer = fs.readFileSync(DB_FILE);
-      if (fileBuffer.length > 0) {
-        instance = new SQL.Database(fileBuffer);
-        console.log('[DB] Database restored from local cached file.');
+      const cloudBuffer = await loadSnapshotFromCloudSql();
+      if (cloudBuffer && cloudBuffer.length > 0) {
+        instance = new SQL.Database(cloudBuffer);
+        try {
+          fs.writeFileSync(DB_FILE, cloudBuffer);
+        } catch (_) {}
+        console.log(`[DB] Database successfully restored from Cloud SQL permanent storage (${cloudBuffer.length} bytes).`);
       }
     } catch (err) {
-      console.error('[DB] Failed to load local database file:', err);
+      console.error('[DB] Failed restoring from Cloud SQL:', err);
     }
-  }
 
-  // 3. If neither exists, create fresh and seed schema
-  const dbToUse: Database = instance || new SQL.Database();
-  dbInstance = dbToUse;
+    // 2. Try restoring from local cached file if Cloud SQL was unreachable
+    if (!instance && fs.existsSync(DB_FILE)) {
+      try {
+        const fileBuffer = fs.readFileSync(DB_FILE);
+        if (fileBuffer.length > 0) {
+          instance = new SQL.Database(fileBuffer);
+          console.log(`[DB] Database restored from local cached file (${fileBuffer.length} bytes).`);
+        }
+      } catch (err) {
+        console.error('[DB] Failed to load local database file:', err);
+      }
+    }
 
-  // Initialize schemas (indexes, default companies, users, bank accounts)
-  initSchema(dbToUse);
-  persistDatabaseSync();
+    // 3. If neither exists, create fresh and seed schema
+    const isBrandNew = !instance;
+    const dbToUse: Database = instance || new SQL.Database();
+    dbInstance = dbToUse;
 
-  return dbToUse;
+    // Initialize schemas, indexes, migrations, and bank catalogs
+    initSchema(dbToUse);
+
+    // Only sync to Cloud SQL on fresh creation if it is truly brand new
+    // NEVER overwrite Cloud SQL on boot if we restored existing data
+    if (isBrandNew) {
+      persistDatabaseSync();
+    }
+
+    return dbToUse;
+  })();
+
+  return dbInitPromise;
 }
 
 export function persistDatabaseSync(): void {
@@ -213,7 +276,7 @@ export function persistDatabaseSync(): void {
     fs.writeFileSync(tempFile, buffer);
     fs.renameSync(tempFile, DB_FILE);
 
-    // Asynchronously synchronize snapshot to Google Cloud SQL permanent storage
+    // Asynchronously synchronize snapshot to Google Cloud SQL permanent storage with safety shield
     saveSnapshotToCloudSql(buffer);
   } catch (err) {
     console.error('[DB] Error persisting database to disk:', err);
@@ -226,7 +289,7 @@ export function scheduleSaveDatabase(): void {
   }
   saveDebounceTimer = setTimeout(() => {
     persistDatabaseSync();
-  }, 100);
+  }, 150);
 }
 
 // Graceful process exit handler to flush to Cloud SQL before container shuts down
@@ -614,7 +677,8 @@ function initSchema(db: Database): void {
       ('bnk-inter', 'matriz', '077', 'Banco Inter', '0001', '', '#f97316'),
       ('bnk-nubank', 'matriz', '260', 'Nubank / Nu Pagamentos', '0001', '', '#8b5cf6'),
       ('bnk-sicoob', 'matriz', '756', 'Sicoob Cooperativa', '0001', '', '#059669'),
-      ('bnk-caixa', 'matriz', '104', 'Caixa Econômica Federal', '0001', '', '#2563eb')
+      ('bnk-caixa', 'matriz', '104', 'Caixa Econômica Federal', '0001', '', '#2563eb'),
+      ('bnk-c6', 'matriz', '336', 'Banco C6 S.A. / C6 Bank', '0001', '', '#1e293b')
     `);
   }
 
@@ -630,9 +694,22 @@ function initSchema(db: Database): void {
       ('bnk-fil-inter', 'filial', '077', 'Banco Inter (Filial)', '0001', '', '#f97316'),
       ('bnk-fil-nubank', 'filial', '260', 'Nubank (Filial)', '0001', '', '#8b5cf6'),
       ('bnk-fil-sicoob', 'filial', '756', 'Sicoob Cooperativa (Filial)', '0001', '', '#059669'),
-      ('bnk-fil-caixa', 'filial', '104', 'Caixa Econômica Federal (Filial)', '0001', '', '#2563eb')
+      ('bnk-fil-caixa', 'filial', '104', 'Caixa Econômica Federal (Filial)', '0001', '', '#2563eb'),
+      ('bnk-fil-c6', 'filial', '336', 'Banco C6 S.A. (Filial)', '0001', '', '#1e293b')
     `);
   }
+
+  // Ensure C6 Bank is present on any existing database for both Matriz and Filial
+  try {
+    const existingC6Matriz = db.exec("SELECT id FROM bank_accounts WHERE bank_code = '336' AND company_id = 'matriz'");
+    if (!existingC6Matriz[0]?.values?.length) {
+      db.run(`INSERT INTO bank_accounts (id, company_id, bank_code, bank_name, agency, account_number, color, active) VALUES ('bnk-c6', 'matriz', '336', 'Banco C6 S.A. / C6 Bank', '0001', '', '#1e293b', 1)`);
+    }
+    const existingC6Filial = db.exec("SELECT id FROM bank_accounts WHERE bank_code = '336' AND company_id = 'filial'");
+    if (!existingC6Filial[0]?.values?.length) {
+      db.run(`INSERT INTO bank_accounts (id, company_id, bank_code, bank_name, agency, account_number, color, active) VALUES ('bnk-fil-c6', 'filial', '336', 'Banco C6 S.A. (Filial)', '0001', '', '#1e293b', 1)`);
+    }
+  } catch (_) {}
 
   // NOTE: NO FICTIONAL TRANSACTIONS, NO FICTIONAL DRIVERS, NO FICTIONAL BATCHES OR SESSIONS.
   // The database starts 100% clean and pristine, ready for real user bank statements and real driver entries.
