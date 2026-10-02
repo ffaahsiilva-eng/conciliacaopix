@@ -5,7 +5,9 @@ import pg from 'pg';
 
 const { Pool } = pg;
 
-const DB_DIR = path.resolve(process.cwd(), 'data');
+// No Vercel, o sistema de arquivos é apenas leitura, exceto pela pasta /tmp.
+const isVercel = !!process.env.VERCEL;
+const DB_DIR = isVercel ? '/tmp/data' : path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DB_DIR, 'conciliapix.sqlite');
 
 let dbInstance: Database | null = null;
@@ -20,9 +22,11 @@ export function getCloudSqlPool(): pg.Pool | null {
     if (!pgPool) {
       pgPool = new Pool({
         host: process.env.SQL_HOST,
+        port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432,
         user: process.env.SQL_USER,
         password: process.env.SQL_PASSWORD,
-        database: process.env.SQL_DB_NAME || 'cloud_sql_development_database',
+        database: process.env.SQL_DB_NAME || 'postgres',
+        ssl: { rejectUnauthorized: false }, // Required for Supabase
         max: 5,
         connectionTimeoutMillis: 20000, // 20s to allow Cloud SQL scale-to-zero to wake up
         idleTimeoutMillis: 30000,
