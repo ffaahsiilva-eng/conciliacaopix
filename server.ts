@@ -2500,7 +2500,8 @@ async function startServer() {
 
   const isProduction = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
   if (!isProduction) {
-    const { createServer: createViteServer } = await import('vite');
+    // Use dynamic function to completely hide the import from Vercel's bundler (@vercel/nft)
+    const { createServer: createViteServer } = await new Function('return import("vite")')();
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa'
