@@ -2,6 +2,7 @@ import initSqlJs, { Database } from 'sql.js';
 import fs from 'fs';
 import path from 'path';
 import pg from 'pg';
+import { gzipSync, gunzipSync } from 'zlib';
 
 const { Pool } = pg;
 
@@ -120,7 +121,15 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
         35000
       );
       if (res && res.rows.length > 0 && res.rows[0]?.data) {
-        const buf = Buffer.from(res.rows[0].data, 'base64');
+        const raw = Buffer.from(res.rows[0].data, 'base64');
+        // Detect gzip magic bytes (1f 8b) and decompress if needed
+        let buf: Buffer;
+        if (raw.length >= 2 && raw[0] === 0x1f && raw[1] === 0x8b) {
+          buf = gunzipSync(raw);
+          console.log(`[CloudSQL] Decompressed gzip snapshot: ${raw.length} → ${buf.length} bytes`);
+        } else {
+          buf = raw;
+        }
         if (buf.length > 0) {
           console.log(`[CloudSQL] Loaded database snapshot (${buf.length} bytes) from Google Cloud SQL.`);
           return buf;
@@ -175,7 +184,10 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
       return;
     }
 
-    const b64 = buffer.toString('base64');
+    // Compress with gzip before base64 to reduce size dramatically (9MB → ~2MB)
+    const compressed = gzipSync(buffer, { level: 9 });
+    const b64 = compressed.toString('base64');
+    console.log(`[CloudSQL] Saving snapshot: ${buffer.length} bytes raw → ${compressed.length} bytes gzipped → ${b64.length} chars base64`);
 
     // 1. Primary snapshot save
     await safeCloudSqlQuery(
