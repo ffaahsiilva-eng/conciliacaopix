@@ -17,12 +17,26 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Vercel Serverless Middleware: Ensure DB is loaded before processing API requests
 app.use('/api', async (req, res, next) => {
+  if (req.path === '/debug-db') return next(); // Skip DB init for debug
   try {
     await getDatabase();
     next();
   } catch (err: any) {
     console.error('[VERCEL DB INIT ERROR]', err);
     res.status(500).json({ error: 'Failed to initialize database on Vercel', details: err?.message, stack: err?.stack });
+  }
+});
+
+app.get('/api/debug-db', async (req, res) => {
+  const pool = getCloudSqlPool();
+  if (!pool) {
+    return res.json({ status: 'NO_POOL', env: { host: !!process.env.SQL_HOST, user: !!process.env.SQL_USER, pass: !!process.env.SQL_PASSWORD } });
+  }
+  try {
+    const r = await pool.query('SELECT 1 as test');
+    res.json({ status: 'OK', test: r.rows });
+  } catch (err: any) {
+    res.json({ status: 'ERROR', error: err?.message });
   }
 });
 
