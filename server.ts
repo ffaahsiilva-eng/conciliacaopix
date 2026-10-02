@@ -1,3 +1,6 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
@@ -12,6 +15,17 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 // Body parsers with large limits for big statement files (over 1 year of data)
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Vercel Serverless Middleware: Ensure DB is loaded before processing API requests
+app.use('/api', async (req, res, next) => {
+  try {
+    await getDatabase();
+    next();
+  } catch (err) {
+    console.error('[VERCEL DB INIT ERROR]', err);
+    res.status(500).json({ error: 'Failed to initialize database on Vercel' });
+  }
+});
 
 // List of SSE subscribers for real-time synchronization
 interface SseClient {
@@ -2524,3 +2538,6 @@ async function startServer() {
 startServer().catch((err) => {
   console.error('[FATAL] Failed to start server:', err);
 });
+
+// Export app for Vercel Serverless Functions
+export default app;
