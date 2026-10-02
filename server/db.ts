@@ -661,9 +661,11 @@ function initSchema(db: Database): void {
     const now = new Date().toISOString();
     db.run(
       `INSERT INTO users (id, name, email, role, pin, allowed_companies, created_at) VALUES 
-       ('usr-admin', 'franco duran', 'franco_junior120@hotmail.com', 'ADMIN', 'FrJr4866', '["matriz","filial"]', ?),
-       ('usr-op1', 'Miguel Duran', 'miguel@cristalsul.com.br', 'OPERATOR', 'Imperatriz00', '["matriz","filial"]', ?)`,
-      [now, now]
+       ('usr-op-aliny', 'Aliny', 'aliny@aguacristalsul.com.br', 'OPERATOR', '1234', '["matriz","filial"]', ?),
+       ('usr-op-miguel', 'Miguel Duran', 'miguel@aguacristalsul.com.br', 'OPERATOR', 'Imperatriz00', '["matriz","filial"]', ?),
+       ('usr-admin-fab', 'fabricio', 'fabricio@cristal.com.br', 'ADMIN', '1234', '["matriz","filial"]', ?),
+       ('usr-admin', 'franco duran', 'franco_junior120@hotmail.com', 'ADMIN', 'FrJr4866', '["matriz","filial"]', ?)`,
+      [now, now, now, now]
     );
   }
 
