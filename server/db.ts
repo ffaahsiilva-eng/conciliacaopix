@@ -363,7 +363,9 @@ function initSchema(db: Database): void {
       active INTEGER NOT NULL DEFAULT 1,
       notes TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      UNIQUE(company_id, code),
+      UNIQUE(company_id, vehicle_plate)
     );
 
     CREATE TABLE IF NOT EXISTS bank_accounts (
@@ -642,6 +644,53 @@ function initSchema(db: Database): void {
   try {
     db.run(`ALTER TABLE audit_logs ADD COLUMN company_id TEXT NOT NULL DEFAULT 'matriz'`);
   } catch (_) {}
+
+  // Auto-migrate drivers table if it has the global UNIQUE constraint on code
+  try {
+    const tableMaster = db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='drivers'");
+    const sqlSchema = (tableMaster[0]?.values[0]?.[0] as string) || '';
+    if (sqlSchema && sqlSchema.includes("code TEXT UNIQUE NOT NULL")) {
+      console.log('[DB Migration] Updating drivers table to remove global UNIQUE constraint on code...');
+      db.run(`
+        CREATE TABLE drivers_new (
+          id TEXT PRIMARY KEY,
+          company_id TEXT NOT NULL DEFAULT 'matriz',
+          code TEXT NOT NULL,
+          name TEXT NOT NULL,
+          cpf TEXT,
+          phone TEXT,
+          vehicle_plate TEXT NOT NULL,
+          vehicle_model TEXT,
+          route TEXT,
+          active INTEGER NOT NULL DEFAULT 1,
+          notes TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          total_sessions INTEGER DEFAULT 0,
+          total_amount_reconciled REAL DEFAULT 0,
+          UNIQUE(company_id, code),
+          UNIQUE(company_id, vehicle_plate)
+        );
+      `);
+
+      db.run(`
+        INSERT INTO drivers_new (
+          id, company_id, code, name, cpf, phone, vehicle_plate, vehicle_model,
+          route, active, notes, created_at, updated_at, total_sessions, total_amount_reconciled
+        )
+        SELECT 
+          id, COALESCE(company_id, 'matriz'), code, name, cpf, phone, vehicle_plate, vehicle_model,
+          route, active, notes, created_at, updated_at, COALESCE(total_sessions, 0), COALESCE(total_amount_reconciled, 0)
+        FROM drivers;
+      `);
+
+      db.run(`DROP TABLE drivers;`);
+      db.run(`ALTER TABLE drivers_new RENAME TO drivers;`);
+      console.log('[DB Migration] Drivers table successfully migrated.');
+    }
+  } catch (migErr) {
+    console.error('[DB Migration Warning]', migErr);
+  }
 
   // Safe index creations after all columns and tables are guaranteed to exist
   try { db.run(`CREATE INDEX IF NOT EXISTS idx_trans_company ON transactions(company_id)`); } catch (_) {}
