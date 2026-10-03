@@ -47,17 +47,19 @@ function AppContent() {
     missingAmount?: number;
   } | null>(null);
 
-  const fetchAuxData = async () => {
+  const refreshDrivers = async () => {
     try {
-      const [banksData, driversData] = await Promise.all([
-        api.getBanks(),
-        api.getDrivers()
-      ]);
-      setBanks(banksData);
+      const driversData = await api.getDrivers();
       setDrivers(driversData);
     } catch (err) {
-      console.error('Failed to load auxiliary data:', err);
+      console.error('Failed to reload drivers:', err);
     }
+  };
+
+  const fetchAuxData = async () => {
+    // Fetch banks and drivers independently so one failure doesn't block the other
+    api.getBanks().then(setBanks).catch((err) => console.error('Failed to load banks:', err));
+    await refreshDrivers();
   };
 
   useEffect(() => {
@@ -277,7 +279,7 @@ function AppContent() {
         isOpen={driverModalOpen}
         onClose={() => setDriverModalOpen(false)}
         driverToEdit={driverToEdit}
-        onSuccess={fetchAuxData}
+        onSuccess={refreshDrivers}
       />
 
       <ReopenModal

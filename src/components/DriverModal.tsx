@@ -8,7 +8,7 @@ interface DriverModalProps {
   isOpen: boolean;
   onClose: () => void;
   driverToEdit: Driver | null;
-  onSuccess: () => void;
+  onSuccess: () => Promise<void> | void;
 }
 
 export const DriverModal: React.FC<DriverModalProps> = ({
@@ -94,7 +94,7 @@ export const DriverModal: React.FC<DriverModalProps> = ({
         await api.createDriver(payload, currentUser);
       }
 
-      onSuccess();
+      await onSuccess();
       onClose();
     } catch (err: any) {
       setErrorMsg(err.message || 'Erro ao salvar motorista.');

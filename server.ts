@@ -475,9 +475,30 @@ app.post('/api/drivers', async (req, res) => {
     // Auto-generate driver code if not provided
     let driverCode = code ? code.trim().toUpperCase() : '';
     if (!driverCode) {
-      const countRow = await queryOne(`SELECT COUNT(*) as c FROM drivers WHERE company_id = ?`, [companyId]);
-      const nextNum = (countRow?.c || 0) + 1;
-      driverCode = `MOT-${String(nextNum).padStart(2, '0')}`;
+      // Find the highest MOT-XX number already used to avoid UNIQUE constraint collisions
+      const existingCodes = await queryAll(
+        `SELECT code FROM drivers WHERE company_id = ? AND code LIKE 'MOT-%'`,
+        [companyId]
+      );
+      let maxNum = 0;
+      for (const row of existingCodes) {
+        const match = String(row.code).match(/^MOT-(\d+)$/);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (num > maxNum) maxNum = num;
+        }
+      }
+      let candidate = maxNum + 1;
+      // Keep incrementing until we find a free slot
+      while (true) {
+        const taken = await queryOne(
+          `SELECT id FROM drivers WHERE company_id = ? AND code = ?`,
+          [companyId, `MOT-${String(candidate).padStart(2, '0')}`]
+        );
+        if (!taken) break;
+        candidate++;
+      }
+      driverCode = `MOT-${String(candidate).padStart(2, '0')}`;
     }
 
     const existing = await queryOne(`SELECT id FROM drivers WHERE company_id = ? AND (code = ? OR vehicle_plate = ?)`, [
