@@ -111,6 +111,14 @@ export function broadcastEvent(eventType: string, payload: any) {
   });
 }
 
+// Disable caching for all API routes to prevent stale data
+app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
 // SSE Endpoint for real-time cloud sync across all connected operators
 app.get('/api/events', (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -2298,6 +2306,7 @@ app.delete('/api/reconciliation/sessions/:id', async (req, res) => {
     const session = await queryOne(`SELECT * FROM reconciliation_sessions WHERE id = ?`, [id]);
     if (!session) return res.status(404).json({ error: 'Acerto não encontrado.' });
 
+    console.log(`[DEBUG DELETE] Found session ${id}. Deleting...`);
     const companyId = session.company_id || 'matriz';
 
     // Reopen and unlock all transactions linked to this session
@@ -2317,9 +2326,13 @@ app.delete('/api/reconciliation/sessions/:id', async (req, res) => {
        WHERE session_id = ?`,
       [`Acerto #${id} excluído pelo administrador ${actorUser.name}. Lançamentos reabertos para Pendente.`, id]
     );
+    console.log(`[DEBUG DELETE] Transactions updated.`);
 
     // Delete session record
     await runSql(`DELETE FROM reconciliation_sessions WHERE id = ?`, [id]);
+    console.log(`[DEBUG DELETE] Session deleted from DB.`);
+    const checkSession = await queryOne(`SELECT id FROM reconciliation_sessions WHERE id = ?`, [id]);
+    console.log(`[DEBUG DELETE] Check after delete: ${checkSession ? 'STILL EXISTS' : 'DELETED'}`);
 
     // Update driver statistics: decrease number of sessions and amount reconciled
     await runSql(
