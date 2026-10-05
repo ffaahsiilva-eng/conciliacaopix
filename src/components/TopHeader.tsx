@@ -93,14 +93,23 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   return (
     <>
       <header className="fluent-topbar">
-        <div className="fluent-page-title">
-          <h1>
-            {title}
-            <span className={isMatriz ? 'fluent-badge-matriz' : 'fluent-badge-filial'}>
-              {currentCompany.name}
-            </span>
-          </h1>
-          <p>{subtitle}</p>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={toggleSidebar} 
+            className="text-slate-500 hover:text-slate-700 hover:bg-slate-100 p-2 rounded-lg cursor-pointer transition-colors"
+            title="Mostrar/Esconder Menu"
+          >
+            <Menu className="w-6 h-6" />
+          </button>
+          <div className="fluent-page-title">
+            <h1>
+              {title}
+              <span className={isMatriz ? 'fluent-badge-matriz' : 'fluent-badge-filial'}>
+                {currentCompany.name}
+              </span>
+            </h1>
+            <p>{subtitle}</p>
+          </div>
         </div>
 
         <div className="fluent-header-actions">

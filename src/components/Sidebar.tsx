@@ -105,12 +105,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="fluent-sidebar-actions">
         <button 
           onClick={onOpenStartSession} 
-          className="border-2 border-blue-700 text-blue-800 bg-white hover:bg-blue-50 font-bold rounded-xl py-2 px-4 flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all" 
+          className="border-2 border-blue-700 text-blue-800 bg-white hover:bg-blue-50 font-bold rounded-lg py-1.5 px-3 text-sm flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all" 
           style={{width: '100%'}}
         >
           <Truck className="w-4 h-4" /> Nova Conciliação
         </button>
-        <button onClick={onOpenUpload} className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl py-2 px-4 flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all font-semibold" style={{width: '100%'}}>
+        <button onClick={onOpenUpload} className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg py-1.5 px-3 text-sm flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all font-semibold" style={{width: '100%'}}>
           <UploadCloud className="w-4 h-4" /> Importar Extrato
         </button>
       </div>

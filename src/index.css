@@ -77,36 +77,39 @@
   flex-direction: column;
   padding: 16px 12px;
   box-sizing: border-box;
-  z-index: 10;
+  z-index: 40;
   box-shadow: 2px 0 10px rgba(0,0,0,0.02);
+  flex-shrink: 0;
 }
 
 .fluent-brand {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  margin-bottom: 24px;
+  gap: 8px;
+  padding: 4px 8px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
 }
 
 .fluent-brand-icon {
-  width: 32px; height: 32px; background: var(--accent-blue);
+  width: 28px; height: 28px; background: var(--accent-blue);
   border-radius: var(--radius-sm); color: white;
   display: flex; justify-content: center; align-items: center;
   flex-shrink: 0;
 }
 
-.fluent-brand-name { font-weight: 600; font-size: 16px; display: flex; flex-direction: column; }
-.fluent-brand-name span { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+.fluent-brand-name { font-weight: 600; font-size: 14px; display: flex; flex-direction: column; }
+.fluent-brand-name span { font-size: 10px; color: var(--text-muted); font-weight: 400; }
 
 .fluent-unit-selector {
   background: white; border: 1px solid var(--border-solid);
-  padding: 12px; border-radius: var(--radius-md); margin-bottom: 24px;
-  font-size: 13px; font-weight: 600;
+  padding: 8px 10px; border-radius: var(--radius-md); margin-bottom: 12px;
+  font-size: 12px; font-weight: 600;
+  flex-shrink: 0;
 }
-.fluent-unit-selector span { display: block; font-size: 11px; color: var(--text-muted); font-weight: 400; margin-top: 4px; }
+.fluent-unit-selector span { display: block; font-size: 10px; color: var(--text-muted); font-weight: 400; margin-top: 2px; }
 
-.fluent-nav-menu { display: flex; flex-direction: column; gap: 4px; flex-grow: 1; }
+.fluent-nav-menu { display: flex; flex-direction: column; gap: 4px; flex-grow: 1; overflow-y: auto; overflow-x: hidden; padding-right: 4px; }
 .fluent-nav-item {
   display: flex; align-items: center; gap: 12px;
   padding: 10px 12px; border-radius: var(--radius-md);
@@ -121,7 +124,7 @@
 }
 .fluent-nav-item span { display: block; font-size: 11px; font-weight: 400; color: var(--text-muted); margin-top: 2px; }
 
-.fluent-sidebar-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 20px; border-top: 1px solid var(--border-solid); padding-top: 20px; }
+.fluent-sidebar-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; border-top: 1px solid var(--border-solid); padding-top: 12px; flex-shrink: 0; }
 
 /* ======== MAIN CONTENT ======== */
 .fluent-main-content {
@@ -181,6 +184,7 @@
 .fluent-table-container {
   background: white; border-radius: var(--radius-lg); border: 1px solid var(--border-solid);
   box-shadow: var(--shadow-sm);
+  overflow-x: auto;
 }
 .fluent-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
 .fluent-table th { background: #f9fbfd; padding: 12px 16px; color: var(--text-muted); font-weight: 600; font-size: 11px; border-bottom: 1px solid var(--border-solid); white-space: nowrap; }
@@ -206,9 +210,36 @@
 }
 
 .fluent-user-profile {
-  display: flex; align-items: center; gap: 12px; margin-top: auto;
-  padding: 12px; border-radius: var(--radius-md); background: white; border: 1px solid var(--border-solid);
+  display: flex; align-items: center; gap: 8px; margin-top: auto;
+  padding: 8px 10px; border-radius: var(--radius-md); background: white; border: 1px solid var(--border-solid);
+  flex-shrink: 0;
 }
-.fluent-user-avatar { width: 32px; height: 32px; background: var(--accent-blue); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
-.fluent-user-info { font-size: 13px; font-weight: 600; overflow: hidden; }
-.fluent-user-info span { display: block; font-size: 11px; font-weight: 400; color: var(--accent-blue); background: var(--accent-light); padding: 2px 6px; border-radius: 4px; width: fit-content; margin-top: 2px; }
+.fluent-user-avatar { width: 28px; height: 28px; background: var(--accent-blue); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
+.fluent-user-info { font-size: 12px; font-weight: 600; overflow: hidden; }
+.fluent-user-info span { display: block; font-size: 10px; font-weight: 400; color: var(--accent-blue); background: var(--accent-light); padding: 2px 4px; border-radius: 4px; width: fit-content; margin-top: 2px; }
+
+/* ======== RESPONSIVENESS ======== */
+@media (max-width: 768px) {
+  .fluent-sidebar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.15);
+  }
+  .fluent-topbar {
+    flex-direction: column;
+    gap: 16px;
+    padding: 16px;
+  }
+  .fluent-header-actions {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .fluent-content-scroll {
+    padding: 0 16px 16px;
+  }
+  .fluent-summary-cards {
+    grid-template-columns: 1fr;
+  }
+}
