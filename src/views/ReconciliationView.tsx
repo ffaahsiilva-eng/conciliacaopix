@@ -62,10 +62,12 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
   const isMatriz = currentCompany.id === 'matriz' || currentCompany.code === 'MATRIZ';
   const {
     isSessionActive,
+    activeSessionId,
     activeDriver,
     selectedTxIds,
     toggleTransaction,
-    selectMultiple
+    selectMultiple,
+    showBlockMessage
   } = useReconciliationSession();
 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -190,6 +192,25 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
 
     return () => unsubscribe();
   }, [filters]);
+
+  const handleOpenTransactionView = async (tx: Transaction, type: 'DETAILS' | 'EDIT') => {
+    if (!currentUser) return;
+    try {
+      await api.lockTransactions([tx.id], activeSessionId || null, currentUser);
+      if (type === 'DETAILS') setSelectedTxForDetails(tx);
+      if (type === 'EDIT') setTxToEdit(tx);
+    } catch (err: any) {
+      showBlockMessage(err.message || 'Comprovante em uso.');
+    }
+  };
+
+  const handleCloseTransactionView = async (tx: Transaction | null, type: 'DETAILS' | 'EDIT') => {
+    if (tx && currentUser && !selectedTxIds.includes(tx.id)) {
+      await api.unlockTransactions([tx.id], currentUser).catch(console.error);
+    }
+    if (type === 'DETAILS') setSelectedTxForDetails(null);
+    if (type === 'EDIT') setTxToEdit(null);
+  };
 
   const handleSelectAllPendingPage = () => {
     const pendingOnPage = transactions.filter((t) => t.status === 'PENDING' && !t.is_pix_return);
@@ -872,7 +893,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                         } else if (isDebit) {
                           setDebitTxForLinking(tx);
                         } else {
-                          setSelectedTxForDetails(tx);
+                          handleOpenTransactionView(tx, 'DETAILS');
                         }
                       }}
                       className={`transition-colors ${
@@ -1021,7 +1042,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setSelectedTxForDetails(tx);
+                            handleOpenTransactionView(tx, 'DETAILS');
                           }}
                           className="mt-1 text-[11px] text-blue-600 hover:text-blue-800 font-bold hover:underline inline-flex items-center gap-1 cursor-pointer"
                         >
@@ -1091,7 +1112,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setSelectedTxForDetails(tx);
+                                  handleOpenTransactionView(tx, 'DETAILS');
                                 }}
                                 className="text-[10px] text-blue-700 hover:underline font-bold block"
                               >
@@ -1154,7 +1175,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                           {/* View Full Details Button */}
                           <button
                             type="button"
-                            onClick={() => setSelectedTxForDetails(tx)}
+                            onClick={() => handleOpenTransactionView(tx, 'DETAILS')}
                             className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 p-1.5 rounded-lg transition-colors cursor-pointer"
                             title="Ver todos os detalhes e dados brutos deste lançamento"
                           >
@@ -1165,7 +1186,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                           {isAdmin && (
                             <button
                               type="button"
-                              onClick={() => setTxToEdit(tx)}
+                              onClick={() => handleOpenTransactionView(tx, 'EDIT')}
                               className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 p-1.5 rounded-lg transition-colors cursor-pointer"
                               title="Editar descrição ou nome do remetente verificado no banco (Administrador)"
                             >
@@ -1618,17 +1639,20 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
       <TransactionDetailsModal
         transaction={selectedTxForDetails}
         isOpen={!!selectedTxForDetails}
-        onClose={() => setSelectedTxForDetails(null)}
+        onClose={() => handleCloseTransactionView(selectedTxForDetails, 'DETAILS')}
         onUpdated={() => fetchTransactions()}
         onOpenLinkReturn={(tx) => setDebitTxForLinking(tx)}
-        onOpenEdit={(tx) => setTxToEdit(tx)}
+        onOpenEdit={(tx) => {
+          handleCloseTransactionView(selectedTxForDetails, 'DETAILS');
+          handleOpenTransactionView(tx, 'EDIT');
+        }}
       />
 
       {/* Modal: Admin Manual Edit of Counterparty & Description */}
       <EditTransactionModal
         transaction={txToEdit}
         isOpen={!!txToEdit}
-        onClose={() => setTxToEdit(null)}
+        onClose={() => handleCloseTransactionView(txToEdit, 'EDIT')}
         onSuccess={() => fetchTransactions()}
       />
     </div>
