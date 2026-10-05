@@ -1947,6 +1947,38 @@ app.post('/api/transactions/unlock', async (req, res) => {
   }
 });
 
+// Force-unlock ALL locks held by a specific user (cleanup on reconnect)
+app.post('/api/transactions/unlock-all-by-user', async (req, res) => {
+  try {
+    const { actorUser } = req.body;
+    const companyId = req.body.company_id || getCompanyId(req);
+
+    if (!actorUser) {
+      return res.status(401).json({ error: 'Operador não identificado.' });
+    }
+
+    const db = await getDatabase();
+    const locked = await queryAll(
+      `SELECT id FROM transactions WHERE locked_by_user_id = ? AND company_id = ? AND status = 'PENDING'`,
+      [actorUser.id, companyId]
+    );
+
+    if (locked.length > 0) {
+      db.run(
+        `UPDATE transactions SET locked_at = NULL, locked_by_user_id = NULL, locked_by_user_name = NULL, locked_by_session_id = NULL WHERE locked_by_user_id = ? AND company_id = ? AND status = 'PENDING'`,
+        [actorUser.id, companyId]
+      );
+      scheduleSaveDatabase();
+      const unlockedIds = locked.map((l: any) => l.id);
+      broadcastEvent('TRANSACTIONS_UNLOCKED', { transactionIds: unlockedIds, company_id: companyId });
+    }
+
+    res.json({ success: true, released: locked.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Start or check active driver reconciliation session
 app.post('/api/reconciliation/start-session', async (req, res) => {
   try {
@@ -2827,6 +2859,30 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[SERVER] ConciliaPix server running on http://0.0.0.0:${PORT}`);
+
+    // Auto-cleanup expired locks every 2 minutes (locks older than 5 minutes)
+    setInterval(async () => {
+      try {
+        const db = await getDatabase();
+        const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+        const stale = await queryAll(
+          `SELECT id FROM transactions WHERE locked_by_user_id IS NOT NULL AND locked_at IS NOT NULL AND locked_at < ? AND status = 'PENDING'`,
+          [fiveMinAgo]
+        );
+        if (stale.length > 0) {
+          db.run(
+            `UPDATE transactions SET locked_at = NULL, locked_by_user_id = NULL, locked_by_user_name = NULL, locked_by_session_id = NULL WHERE locked_by_user_id IS NOT NULL AND locked_at IS NOT NULL AND locked_at < ? AND status = 'PENDING'`,
+            [fiveMinAgo]
+          );
+          scheduleSaveDatabase();
+          const staleIds = stale.map((s: any) => s.id);
+          broadcastEvent('TRANSACTIONS_UNLOCKED', { transactionIds: staleIds, company_id: 'all', reason: 'expired' });
+          console.log(`[LOCK-CLEANUP] Released ${stale.length} expired lock(s).`);
+        }
+      } catch (err) {
+        console.error('[LOCK-CLEANUP] Error:', err);
+      }
+    }, 2 * 60 * 1000); // Every 2 minutes
   });
 }
 

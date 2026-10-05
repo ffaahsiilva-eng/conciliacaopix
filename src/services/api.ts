@@ -523,6 +523,17 @@ export const api = {
     return json;
   },
 
+  async unlockAllByUser(actorUser: User): Promise<{ success: boolean; released: number }> {
+    const res = await customFetch('/api/transactions/unlock-all-by-user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actorUser })
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Falha ao desbloquear transações do usuário.');
+    return json;
+  },
+
   // Reconciliation
   async startReconciliationSession(driverId: string, notes: string | undefined, actorUser: User, companyId?: string): Promise<ReconciliationSession> {
     const res = await customFetch('/api/reconciliation/start-session', {

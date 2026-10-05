@@ -65,6 +65,8 @@ function AppContent() {
   useEffect(() => {
     if (currentUser) {
       fetchAuxData();
+      // Cleanup any orphaned locks from this user (e.g. previous session/browser crash)
+      api.unlockAllByUser(currentUser).catch(console.error);
     }
   }, [currentCompany?.id, currentUser?.id]);
   // Global popup toasts

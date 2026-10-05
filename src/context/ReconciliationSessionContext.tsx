@@ -70,21 +70,16 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
   // Fallback: unlock on window close
   useEffect(() => {
     const handleBeforeUnload = () => {
-      if (selectedTxIds.length > 0 && currentUser) {
-        // We use navigator.sendBeacon or a synchronous fetch if possible, 
-        // but since we can't await here reliably, just firing a fire-and-forget fetch
+      if (currentUser) {
+        // Use sendBeacon for reliability - unlocks ALL locks held by this user
         const companyId = api.getGlobalCompanyId();
-        fetch('/api/transactions/unlock', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-company-id': companyId },
-          body: JSON.stringify({ transaction_ids: selectedTxIds, actorUser: currentUser }),
-          keepalive: true
-        }).catch(() => {});
+        const payload = JSON.stringify({ actorUser: currentUser, company_id: companyId });
+        navigator.sendBeacon('/api/transactions/unlock-all-by-user', new Blob([payload], { type: 'application/json' }));
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [selectedTxIds, currentUser]);
+  }, [currentUser]);
 
   const toggleTransaction = async (tx: Transaction) => {
     // Crucial rule: Reconciled, returned Pix, or ignored transactions can NEVER be selected
