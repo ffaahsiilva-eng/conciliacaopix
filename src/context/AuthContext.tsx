@@ -30,22 +30,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const data = await api.getUsers();
       setUsers(data);
 
-      // Check if there is an active authenticated session
-      const savedUserJson = sessionStorage.getItem('conciliapix_auth_user') || localStorage.getItem('conciliapix_auth_user');
-      if (savedUserJson) {
-        try {
-          const parsed = JSON.parse(savedUserJson) as User;
-          const fresh = data.find((u) => u.id === parsed.id && u.active === 1);
-          if (fresh) {
-            setCurrentUser(fresh);
-          } else {
-            sessionStorage.removeItem('conciliapix_auth_user');
-            localStorage.removeItem('conciliapix_auth_user');
-            setCurrentUser(null);
-          }
-        } catch {
+      try {
+        const me = await api.getMe();
+        const fresh = data.find((u) => u.id === me.id && u.active === 1);
+        if (fresh) {
+          setCurrentUser(fresh);
+        } else {
           setCurrentUser(null);
         }
+      } catch {
+        setCurrentUser(null);
       }
     } catch (err) {
       console.error('Failed to load users:', err);
@@ -70,15 +64,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (emailOrId: string, password: string): Promise<User> => {
     const res = await api.login(emailOrId, password);
     setCurrentUser(res.user);
-    sessionStorage.setItem('conciliapix_auth_user', JSON.stringify(res.user));
-    localStorage.setItem('conciliapix_auth_user', JSON.stringify(res.user));
+    // Cleanup de possíveis resquícios antigos no localStorage do usuário
+    localStorage.removeItem('conciliapix_auth_user');
+    sessionStorage.removeItem('conciliapix_auth_user');
     return res.user;
   };
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      await api.logout();
+    } catch (err) {
+      console.error(err);
+    }
     setCurrentUser(null);
-    sessionStorage.removeItem('conciliapix_auth_user');
     localStorage.removeItem('conciliapix_auth_user');
+    sessionStorage.removeItem('conciliapix_auth_user');
   };
 
   const changePassword = async (userId: string, currentPassword: string | undefined, newPassword: string) => {

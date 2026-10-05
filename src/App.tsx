@@ -125,7 +125,7 @@ function AppContent() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 flex font-sans antialiased selection:bg-blue-600 selection:text-white">
+    <div className="fluent-layout">
       {/* Lateral Collapsible Sidebar */}
       <Sidebar
         currentTab={currentTab}
@@ -137,7 +137,7 @@ function AppContent() {
       />
 
       {/* Main Content Column */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-x-hidden">
+      <div className="fluent-main-content">
         {/* Top Header */}
         <TopHeader
           currentTab={currentTab}
@@ -201,7 +201,8 @@ function AppContent() {
         )}
 
         {/* Main View Area */}
-        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <main className="flex-1 overflow-y-auto min-h-0 w-full relative">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full">
           {currentTab === 'conciliation' && (
             <ReconciliationView
               banks={banks}
@@ -234,6 +235,7 @@ function AppContent() {
           )}
 
           {currentTab === 'users' && <UsersView />}
+          </div>
         </main>
 
         {/* Footer */}

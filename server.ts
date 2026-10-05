@@ -2,6 +2,10 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import express, { Request, Response, NextFunction } from 'express';
+import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
+import jwt from 'jsonwebtoken';
 import path from 'path';
 import fs from 'fs';
 import { getDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery } from './server/db.js';
@@ -10,10 +14,46 @@ import { parseCsvStatement } from './server/parsers/csvParser.js';
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-fallback-key-change-in-production';
+
+// ==========================================
+// 1. BLINDAGEM DE SEGURANÇA (SECURITY HEADERS)
+// ==========================================
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // unsafe-eval/inline needed for Vite dev
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'", "ws:", "wss:"], // WebSockets for dev and SSE
+    },
+  },
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  },
+  frameguard: { action: 'deny' }, // X-Frame-Options: DENY
+  noSniff: true // X-Content-Type-Options: nosniff
+}));
+
+// ==========================================
+// 2. ISOLAMENTO DE SEGREDOS
+// ==========================================
+// Bloqueia acesso a arquivos de sistema explícitos (.env, .git, .htpasswd) mas permite outros do vite (.vite)
+app.use((req, res, next) => {
+  if (req.path.match(/\/\.(env|git|htpasswd)/i)) {
+    return res.status(403).send('Forbidden');
+  }
+  next();
+});
 
 // Body parsers with large limits for big statement files (over 1 year of data)
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(cookieParser());
 
 // Vercel Serverless Middleware: Ensure DB is loaded before processing API requests
 app.use('/api', async (req, res, next) => {
@@ -108,6 +148,31 @@ app.get('/api/events', (req: Request, res: Response) => {
     sseClients = sseClients.filter((c) => c.id !== clientId);
   });
 });
+
+// Cleanup automático de locks orfãos (>30 min)
+async function cleanupOrphanLocks() {
+  try {
+    const db = await getDatabase();
+    const thirtyMinsAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    
+    // Unlock pending transactions that have been locked for more than 30 mins
+    db.run(
+      `UPDATE transactions SET 
+        locked_at = NULL, 
+        locked_by_user_id = NULL, 
+        locked_by_user_name = NULL, 
+        locked_by_session_id = NULL 
+       WHERE status = 'PENDING' AND locked_at IS NOT NULL AND locked_at < ?`,
+      [thirtyMinsAgo]
+    );
+    scheduleSaveDatabase();
+  } catch (err) {
+    console.error('[Cleanup Locks Error]', err);
+  }
+}
+
+// Run cleanup periodically every 10 minutes
+setInterval(cleanupOrphanLocks, 10 * 60 * 1000);
 
 // Helper for running SQL with proper mapping and guaranteed stmt.free()
 async function queryAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
@@ -343,8 +408,17 @@ app.delete('/api/users/:id', async (req, res) => {
   }
 });
 
+// ==========================================
+// 3. RATE LIMITING (Força Bruta)
+// ==========================================
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // limit each IP to 20 requests per windowMs
+  message: { error: 'Muitas tentativas de login. Tente novamente em 15 minutos.' }
+});
+
 // Authentication: Login with Password verification
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
   try {
     const { emailOrId, password } = req.body;
     if (!emailOrId || !password) {
@@ -388,10 +462,58 @@ app.post('/api/auth/login', async (req, res) => {
       created_at: user.created_at
     };
 
+    // ==========================================
+    // 4. AUTENTICAÇÃO COM COOKIES HTTP-ONLY
+    // ==========================================
+    const token = jwt.sign({ id: safeUser.id, role: safeUser.role }, JWT_SECRET, { expiresIn: '7d' });
+    
+    res.cookie('conciliapix_token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
     res.json({ success: true, user: safeUser });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Nova rota para validar o cookie JWT e retornar o usuário atual
+app.get('/api/auth/me', async (req, res) => {
+  try {
+    const token = req.cookies?.conciliapix_token;
+    if (!token) return res.status(401).json({ error: 'Não autenticado' });
+
+    const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
+    const db = await getDatabase();
+    const user = await queryOne(`SELECT * FROM users WHERE id = ?`, [decoded.id]);
+    
+    if (!user || user.active !== 1) {
+      res.clearCookie('conciliapix_token');
+      return res.status(401).json({ error: 'Sessão inválida ou usuário inativo' });
+    }
+    
+    let allowed_companies = ['matriz', 'filial'];
+    try { if (user.allowed_companies) allowed_companies = JSON.parse(user.allowed_companies); } catch {}
+    
+    const safeUser = {
+      id: user.id, name: user.name, email: user.email, role: user.role, avatar: user.avatar,
+      allowed_companies, active: user.active, created_at: user.created_at
+    };
+    
+    res.json({ success: true, user: safeUser });
+  } catch (err: any) {
+    res.clearCookie('conciliapix_token');
+    res.status(401).json({ error: 'Sessão inválida' });
+  }
+});
+
+// Logout: clear cookie
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('conciliapix_token');
+  res.json({ success: true });
 });
 
 // Authentication: Change Password
@@ -1701,6 +1823,121 @@ app.get('/api/transactions', async (req, res) => {
 // Reconciliation Session & Locking Endpoints (CRITICAL BUSINESS RULES)
 // -------------------------------------------------------------
 
+// Lock transactions (immediate lock on selection)
+app.post('/api/transactions/lock', async (req, res) => {
+  try {
+    const { transaction_ids, session_id, actorUser } = req.body;
+    const companyId = req.body.company_id || getCompanyId(req);
+
+    if (!Array.isArray(transaction_ids) || transaction_ids.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma transação fornecida para bloqueio.' });
+    }
+    if (!actorUser) {
+      return res.status(401).json({ error: 'Operador não identificado.' });
+    }
+
+    const db = await getDatabase();
+    const nowIso = new Date().toISOString();
+    
+    // 1. Check if any is already locked by someone else or reconciled
+    const placeholders = transaction_ids.map(() => '?').join(',');
+    const checkStmt = db.prepare(
+      `SELECT id, status, locked_by_user_id, locked_by_user_name, locked_by_session_id, description, amount 
+       FROM transactions WHERE id IN (${placeholders}) AND company_id = ?`
+    );
+    checkStmt.bind([...transaction_ids, companyId]);
+    const existing: any[] = [];
+    while (checkStmt.step()) {
+      existing.push(checkStmt.getAsObject());
+    }
+    checkStmt.free();
+
+    // Validate
+    for (const tx of existing) {
+      if (tx.status === 'RECONCILED' || tx.status === 'IGNORED' || tx.status === 'RETURNED') {
+        return res.status(409).json({ error: `Transação "${tx.description}" já foi processada (Status: ${tx.status}).` });
+      }
+      if (tx.locked_by_user_id && tx.locked_by_user_id !== actorUser.id) {
+        return res.status(409).json({ error: `Transação "${tx.description}" (R$ ${Number(tx.amount).toFixed(2)}) já está sendo concilada por ${tx.locked_by_user_name}.` });
+      }
+    }
+
+    // 2. Lock them
+    for (const id of transaction_ids) {
+      db.run(
+        `UPDATE transactions SET 
+          locked_at = ?,
+          locked_by_user_id = ?,
+          locked_by_user_name = ?,
+          locked_by_session_id = ?
+         WHERE id = ? AND company_id = ? AND status = 'PENDING'`,
+        [nowIso, actorUser.id, actorUser.name, session_id || null, id, companyId]
+      );
+    }
+    
+    scheduleSaveDatabase();
+    
+    broadcastEvent('TRANSACTIONS_LOCKED', {
+      transactionIds: transaction_ids,
+      lockedByUserName: actorUser.name,
+      lockedByUserId: actorUser.id,
+      company_id: companyId
+    });
+
+    res.json({ success: true, message: 'Transações bloqueadas com sucesso.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Unlock transactions (when deselected or session cancelled)
+app.post('/api/transactions/unlock', async (req, res) => {
+  try {
+    const { transaction_ids, actorUser } = req.body;
+    const companyId = req.body.company_id || getCompanyId(req);
+
+    if (!Array.isArray(transaction_ids) || transaction_ids.length === 0) {
+      return res.status(400).json({ error: 'Nenhuma transação fornecida para desbloqueio.' });
+    }
+    if (!actorUser) {
+      return res.status(401).json({ error: 'Operador não identificado.' });
+    }
+
+    const db = await getDatabase();
+    
+    // Only unlock if it's PENDING and locked by the SAME user (or by admin)
+    // If it's RECONCILED, we cannot unlock it here (that's what /reopen is for)
+    for (const id of transaction_ids) {
+      if (actorUser.role === 'ADMIN') {
+        db.run(
+          `UPDATE transactions SET 
+            locked_at = NULL, locked_by_user_id = NULL, locked_by_user_name = NULL, locked_by_session_id = NULL
+           WHERE id = ? AND company_id = ? AND status = 'PENDING'`,
+          [id, companyId]
+        );
+      } else {
+        db.run(
+          `UPDATE transactions SET 
+            locked_at = NULL, locked_by_user_id = NULL, locked_by_user_name = NULL, locked_by_session_id = NULL
+           WHERE id = ? AND company_id = ? AND status = 'PENDING' AND locked_by_user_id = ?`,
+          [id, companyId, actorUser.id]
+        );
+      }
+    }
+    
+    scheduleSaveDatabase();
+    
+    broadcastEvent('TRANSACTIONS_UNLOCKED', {
+      transactionIds: transaction_ids,
+      company_id: companyId
+    });
+
+    res.json({ success: true, message: 'Transações desbloqueadas com sucesso.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Start or check active driver reconciliation session
 app.post('/api/reconciliation/start-session', async (req, res) => {
   try {
@@ -1828,8 +2065,10 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
     let totalSum = 0;
     const finalSessionId = session_id || `sess-${Date.now()}`;
 
-    for (const tx of existingSelected) {
-      totalSum += Number(tx.amount);
+    db.run('BEGIN TRANSACTION');
+    try {
+      for (const tx of existingSelected) {
+        totalSum += Number(tx.amount);
       const voucher = (voucher_numbers && voucher_numbers[tx.id]) || general_voucher || null;
 
       db.run(
@@ -1899,6 +2138,12 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
           notes || null
         ]
       );
+    }
+
+    db.run('COMMIT TRANSACTION');
+    } catch(err: any) {
+      db.run('ROLLBACK TRANSACTION');
+      throw err;
     }
 
     scheduleSaveDatabase();

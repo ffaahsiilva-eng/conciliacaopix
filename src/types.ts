@@ -106,6 +106,9 @@ export interface Transaction {
   raw_data?: string;
   created_at: string;
   locked_at?: string;
+  locked_by_user_id?: string;
+  locked_by_user_name?: string;
+  locked_by_session_id?: string;
 }
 
 export interface ReconciliationSession {

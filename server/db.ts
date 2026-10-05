@@ -429,7 +429,10 @@ function initSchema(db: Database): void {
       linked_tx_id TEXT,
       raw_data TEXT,
       created_at TEXT NOT NULL,
-      locked_at TEXT
+      locked_at TEXT,
+      locked_by_user_id TEXT,
+      locked_by_user_name TEXT,
+      locked_by_session_id TEXT
     );
 
     CREATE TABLE IF NOT EXISTS reconciliation_sessions (
@@ -500,7 +503,10 @@ function initSchema(db: Database): void {
           linked_tx_id TEXT,
           raw_data TEXT,
           created_at TEXT NOT NULL,
-          locked_at TEXT
+          locked_at TEXT,
+          locked_by_user_id TEXT,
+          locked_by_user_name TEXT,
+          locked_by_session_id TEXT
         );
       `);
 
@@ -511,14 +517,14 @@ function initSchema(db: Database): void {
           description, memo, document_number, is_pix, status,
           reconciled_at, reconciled_by_user_id, reconciled_by_user_name,
           driver_id, driver_name, driver_plate, session_id, voucher_number, notes,
-          created_at, locked_at
+          created_at, locked_at, locked_by_user_id, locked_by_user_name, locked_by_session_id
         )
         SELECT 
           id, import_batch_id, bank_name, bank_code, fitid, date, type, amount,
           description, memo, document_number, COALESCE(is_pix, 0), status,
           reconciled_at, reconciled_by_user_id, reconciled_by_user_name,
           driver_id, driver_name, driver_plate, session_id, voucher_number, notes,
-          created_at, locked_at
+          created_at, locked_at, locked_by_user_id, locked_by_user_name, locked_by_session_id
         FROM transactions;
       `);
 
@@ -562,6 +568,15 @@ function initSchema(db: Database): void {
   } catch (_) {}
   try {
     db.run(`UPDATE transactions SET original_amount = amount WHERE original_amount IS NULL`);
+  } catch (_) {}
+  try {
+    db.run(`ALTER TABLE transactions ADD COLUMN locked_by_user_id TEXT`);
+  } catch (_) {}
+  try {
+    db.run(`ALTER TABLE transactions ADD COLUMN locked_by_user_name TEXT`);
+  } catch (_) {}
+  try {
+    db.run(`ALTER TABLE transactions ADD COLUMN locked_by_session_id TEXT`);
   } catch (_) {}
 
   // Clean counterparty_name on existing transactions if it contains raw PIX memo
@@ -775,6 +790,27 @@ function initSchema(db: Database): void {
       db.run(`INSERT INTO bank_accounts (id, company_id, bank_code, bank_name, agency, account_number, color, active) VALUES ('bnk-fil-c6', 'filial', '336', 'Banco C6 S.A. (Filial)', '0001', '', '#1e293b', 1)`);
     }
   } catch (_) {}
+
+  // -------------------------------------------------------------
+  // Otimização de Performance (Índices / Indexes)
+  // -------------------------------------------------------------
+  try {
+    // Índices nas Transações (Comprovantes)
+    db.run(`CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_transactions_driver ON transactions(driver_id)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_transactions_company ON transactions(company_id)`);
+
+    // Índices em Motoristas
+    db.run(`CREATE INDEX IF NOT EXISTS idx_drivers_active ON drivers(active)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_drivers_company ON drivers(company_id)`);
+
+    // Índices em Sessões de Conciliação
+    db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_company ON reconciliation_sessions(company_id)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_driver ON reconciliation_sessions(driver_id)`);
+  } catch(e) {
+    console.error("[DB Optimization] Falha ao criar índices:", e);
+  }
 
   // NOTE: NO FICTIONAL TRANSACTIONS, NO FICTIONAL DRIVERS, NO FICTIONAL BATCHES OR SESSIONS.
   // The database starts 100% clean and pristine, ready for real user bank statements and real driver entries.

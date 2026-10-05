@@ -125,7 +125,8 @@ const customFetch = async (url: RequestInfo | URL, init?: RequestInit): Promise<
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000);
+  // 10s Timeout defined for performance & infinite loading resolution
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
 
   try {
     const signal = init?.signal || controller.signal;
@@ -135,7 +136,7 @@ const customFetch = async (url: RequestInfo | URL, init?: RequestInit): Promise<
   } catch (err: any) {
     clearTimeout(timeoutId);
     if (err.name === 'AbortError') {
-      throw new Error('A requisição demorou muito para responder (timeout). Tente recarregar.');
+      throw new Error('Tempo limite excedido. O servidor demorou mais de 10 segundos para responder.');
     }
     throw err;
   }
@@ -164,6 +165,20 @@ export const api = {
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Falha ao autenticar.');
     return json;
+  },
+
+  async logout(): Promise<void> {
+    await customFetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+  },
+
+  async getMe(): Promise<User> {
+    const res = await customFetch('/api/auth/me');
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Não autenticado.');
+    return json.user;
   },
 
   async changePassword(data: {
@@ -476,6 +491,28 @@ export const api = {
     const res = await customFetch(`/api/transactions?${query.toString()}`);
     if (!res.ok) throw new Error('Falha ao buscar transações');
     return res.json();
+  },
+
+  async lockTransactions(transactionIds: string[], sessionId: string | null, actorUser: User): Promise<{ success: boolean; message: string }> {
+    const res = await customFetch('/api/transactions/lock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transaction_ids: transactionIds, session_id: sessionId, actorUser })
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Falha ao bloquear transações.');
+    return json;
+  },
+
+  async unlockTransactions(transactionIds: string[], actorUser: User): Promise<{ success: boolean; message: string }> {
+    const res = await customFetch('/api/transactions/unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transaction_ids: transactionIds, actorUser })
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Falha ao desbloquear transações.');
+    return json;
   },
 
   // Reconciliation

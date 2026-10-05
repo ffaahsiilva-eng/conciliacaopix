@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Driver, Transaction } from '../types';
 import { api } from '../services/api';
 import { useAuth } from './AuthContext';
@@ -65,7 +65,26 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
     }
   };
 
-  const toggleTransaction = (tx: Transaction) => {
+  // Fallback: unlock on window close
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (selectedTxIds.length > 0 && currentUser) {
+        // We use navigator.sendBeacon or a synchronous fetch if possible, 
+        // but since we can't await here reliably, just firing a fire-and-forget fetch
+        const companyId = api.getGlobalCompanyId();
+        fetch('/api/transactions/unlock', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-company-id': companyId },
+          body: JSON.stringify({ transaction_ids: selectedTxIds, actorUser: currentUser }),
+          keepalive: true
+        }).catch(() => {});
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [selectedTxIds, currentUser]);
+
+  const toggleTransaction = async (tx: Transaction) => {
     // Crucial rule: Reconciled, returned Pix, or ignored transactions can NEVER be selected
     if (
       tx.status === 'RECONCILED' ||
@@ -77,40 +96,63 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
       return;
     }
 
-    setSelectedTxIds((prev) => {
-      const exists = prev.includes(tx.id);
-      if (exists) {
-        const next = prev.filter((id) => id !== tx.id);
-        const mapCopy = { ...selectedTransactionsMap };
-        delete mapCopy[tx.id];
-        setSelectedTransactionsMap(mapCopy);
-        return next;
-      } else {
+    const isSelecting = !selectedTxIds.includes(tx.id);
+
+    if (isSelecting) {
+      if (!currentUser) return;
+      try {
+        await api.lockTransactions([tx.id], activeSessionId, currentUser);
+        setSelectedTxIds((prev) => [...prev, tx.id]);
         setSelectedTransactionsMap((prevMap) => ({ ...prevMap, [tx.id]: tx }));
-        return [...prev, tx.id];
+      } catch (err: any) {
+        alert(err.message || 'Não foi possível bloquear a transação.');
       }
-    });
+    } else {
+      if (currentUser) {
+        // unlock
+        api.unlockTransactions([tx.id], currentUser).catch(console.error);
+      }
+      setSelectedTxIds((prev) => prev.filter((id) => id !== tx.id));
+      setSelectedTransactionsMap((prevMap) => {
+        const mapCopy = { ...prevMap };
+        delete mapCopy[tx.id];
+        return mapCopy;
+      });
+    }
   };
 
-  const selectMultiple = (txs: Transaction[]) => {
+  const selectMultiple = async (txs: Transaction[]) => {
     // Only valid pending transactions can be selected
     const allowed = txs.filter(
-      (t) => t.status === 'PENDING' && t.is_pix_return !== 1 && t.is_pix_return !== true
+      (t) => t.status === 'PENDING' && t.is_pix_return !== 1 && t.is_pix_return !== true && !selectedTxIds.includes(t.id)
     );
+    if (allowed.length === 0) return;
+    
+    if (!currentUser) return;
     const newIds = allowed.map((t) => t.id);
-    const newMap: Record<string, Transaction> = {};
-    allowed.forEach((t) => {
-      newMap[t.id] = t;
-    });
 
-    setSelectedTxIds((prev) => {
-      const combined = Array.from(new Set([...prev, ...newIds]));
-      return combined;
-    });
-    setSelectedTransactionsMap((prev) => ({ ...prev, ...newMap }));
+    try {
+      await api.lockTransactions(newIds, activeSessionId, currentUser);
+      
+      const newMap: Record<string, Transaction> = {};
+      allowed.forEach((t) => {
+        newMap[t.id] = t;
+      });
+
+      setSelectedTxIds((prev) => {
+        const combined = Array.from(new Set([...prev, ...newIds]));
+        return combined;
+      });
+      setSelectedTransactionsMap((prev) => ({ ...prev, ...newMap }));
+    } catch (err: any) {
+      alert(err.message || 'Erro ao tentar bloquear as transações.');
+    }
   };
 
   const clearSelection = () => {
+    if (selectedTxIds.length > 0 && currentUser) {
+      api.unlockTransactions(selectedTxIds, currentUser).catch(console.error);
+    }
     setSelectedTxIds([]);
     setSelectedTransactionsMap({});
   };
@@ -120,6 +162,9 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
   };
 
   const cancelSession = () => {
+    if (selectedTxIds.length > 0 && currentUser) {
+      api.unlockTransactions(selectedTxIds, currentUser).catch(console.error);
+    }
     setActiveDriver(null);
     setActiveSessionId(null);
     setSelectedTxIds([]);

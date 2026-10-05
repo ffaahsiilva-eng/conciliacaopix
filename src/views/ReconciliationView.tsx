@@ -86,8 +86,18 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
     end_date: '',
     order_by: 'DATE_DESC',
     page: 1,
-    limit: 100
+    limit: 20
   });
+
+  const [searchInput, setSearchInput] = useState(filters.search);
+
+  // Debounce effect for search
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setFilters((prev) => ({ ...prev, search: searchInput, page: 1 }));
+    }, 600);
+    return () => clearTimeout(handler);
+  }, [searchInput]);
 
   // Re-fetch transactions whenever current company changes
   useEffect(() => {
@@ -96,7 +106,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
 
   const [pagination, setPagination] = useState({
     page: 1,
-    limit: 50,
+    limit: 20,
     totalItems: 0,
     totalPages: 1
   });
@@ -149,7 +159,9 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
         event.type === 'TRANSACTION_REOPENED' ||
         event.type === 'TRANSACTION_DELETED' ||
         event.type === 'TRANSACTION_UPDATED' ||
-        event.type === 'DATABASE_CLEANED'
+        event.type === 'DATABASE_CLEANED' ||
+        event.type === 'TRANSACTIONS_LOCKED' ||
+        event.type === 'TRANSACTIONS_UNLOCKED'
       ) {
         if (event.type === 'RECONCILIATION_COMPLETED') {
           setLiveNotification(
@@ -167,6 +179,8 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
           setLiveNotification(`Transação atualizada em tempo real.`);
         } else if (event.type === 'DATABASE_CLEANED') {
           setLiveNotification(`Banco de dados limpo com sucesso.`);
+        } else if (event.type === 'TRANSACTIONS_LOCKED' && event.payload?.lockedByUserId !== currentUser?.id) {
+          setLiveNotification(`Algumas transações foram bloqueadas por ${event.payload?.lockedByUserName}.`);
         }
 
         setTimeout(() => setLiveNotification(null), 5000);
@@ -257,10 +271,10 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
       : 0;
 
   return (
-    <div className="space-y-5">
+    <div className="fluent-content-scroll">
       {/* Real-time sync notification banner */}
       {liveNotification && (
-        <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3 px-4 shadow-xs text-xs text-emerald-900 flex items-center justify-between animate-fade-in">
+        <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3 px-4 shadow-xs text-xs text-emerald-900 flex items-center justify-between animate-fade-in" style={{marginBottom: '16px'}}>
           <div className="flex items-center space-x-2">
             <span className="flex h-2 w-2 relative">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75"></span>
@@ -278,175 +292,138 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
       )}
 
       {/* Top Metric Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
+      <div className="fluent-summary-cards">
         {/* Total Extrato */}
-        <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
-          <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+        <div className="fluent-card">
+          <div className="fluent-card-header">
             <span className="font-bold">Total Lançamentos</span>
-            <Building2 className="w-4 h-4 text-slate-400" />
+            <Building2 className="w-4 h-4" />
           </div>
-          <div className="text-xl font-extrabold text-slate-900 tracking-tight">
+          <div className="fluent-card-value">
             {formatCurrency(stats.total_sum)}
           </div>
-          <div className="text-[11px] text-slate-500 mt-1">
+          <div className="fluent-card-sub">
             {stats.total_count || 0} movimentações
           </div>
         </div>
 
         {/* Pendentes */}
-        <div className="bg-white border border-amber-200 rounded-2xl p-4 shadow-xs">
-          <div className="flex items-center justify-between text-xs text-amber-800 mb-1">
+        <div className="fluent-card warning">
+          <div className="fluent-card-header">
             <span className="font-bold">Pendentes de Acerto</span>
-            <Clock className="w-4 h-4 text-amber-500" />
+            <Clock className="w-4 h-4" />
           </div>
-          <div className="text-xl font-extrabold text-amber-600 tracking-tight">
+          <div className="fluent-card-value">
             {formatCurrency(stats.pending_sum)}
           </div>
-          <div className="text-[11px] text-amber-700 mt-1">
+          <div className="fluent-card-sub">
             {stats.pending_count || 0} aguardando conferência
           </div>
         </div>
 
         {/* Conciliadas */}
-        <div className="bg-white border border-emerald-200 rounded-2xl p-4 shadow-xs">
-          <div className="flex items-center justify-between text-xs text-emerald-800 mb-1">
+        <div className="fluent-card success">
+          <div className="fluent-card-header">
             <span className="font-bold">Conciliados & Vinculados</span>
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            <CheckCircle2 className="w-4 h-4" />
           </div>
-          <div className="text-xl font-extrabold text-emerald-600 tracking-tight">
+          <div className="fluent-card-value">
             {formatCurrency(stats.reconciled_sum)}
           </div>
-          <div className="text-[11px] text-emerald-700 mt-1 flex items-center justify-between">
+          <div className="fluent-card-sub flex items-center justify-between">
             <span>{stats.reconciled_count || 0} confirmados</span>
             <span className="font-bold">{percentReconciled}%</span>
           </div>
         </div>
 
         {/* Devoluções de Pix (Estornados) */}
-        <div className="bg-white border border-red-200 rounded-2xl p-4 shadow-xs">
-          <div className="flex items-center justify-between text-xs text-red-800 mb-1">
+        <div className="fluent-card danger">
+          <div className="fluent-card-header">
             <span className="font-bold">Devoluções / Estornos</span>
-            <Undo2 className="w-4 h-4 text-red-500" />
+            <Undo2 className="w-4 h-4" />
           </div>
-          <div className="text-xl font-extrabold text-red-600 tracking-tight">
+          <div className="fluent-card-value">
             {formatCurrency(stats.returned_sum)}
           </div>
-          <div className="text-[11px] text-red-700 mt-1 font-bold">
+          <div className="fluent-card-sub font-bold">
             {stats.returned_count || 0} bloqueados antifraude
           </div>
         </div>
 
         {/* Desconsiderados / Depósitos em Agência */}
-        <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs col-span-2 lg:col-span-1">
-          <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+        <div className="fluent-card">
+          <div className="fluent-card-header">
             <span className="font-bold">Desconsiderados</span>
-            <EyeOff className="w-4 h-4 text-slate-400" />
+            <EyeOff className="w-4 h-4" />
           </div>
-          <div className="text-xl font-extrabold text-slate-700 tracking-tight">
+          <div className="fluent-card-value">
             {formatCurrency(stats.ignored_sum)}
           </div>
-          <div className="text-[11px] text-slate-500 mt-1">
+          <div className="fluent-card-sub">
             {stats.ignored_count || 0} fora da prestação
           </div>
         </div>
       </div>
 
       {/* Main Filter & Search Toolbar */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs space-y-3.5">
-        {/* Row 1: Filter Controls (Direction, Status, Advanced Drawer) */}
-        <div className="flex flex-wrap items-center justify-between gap-2.5">
-          {/* Quick Direction Tabs: Entradas vs Saídas de Devolução */}
-          <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs overflow-x-auto">
-            <button
-              onClick={() => setFilters({ ...filters, type: 'CREDIT', page: 1 })}
-              className={`px-3 py-1.5 rounded-lg font-bold transition-all whitespace-nowrap cursor-pointer ${
-                filters.type === 'CREDIT'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Entradas (Créditos)
-            </button>
-            <button
-              onClick={() => setFilters({ ...filters, type: 'DEBIT_RETURN', page: 1 })}
-              className={`px-3 py-1.5 rounded-lg font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1 ${
-                filters.type === 'DEBIT_RETURN'
-                  ? 'bg-red-600 text-white shadow-xs'
-                  : 'text-red-700 hover:bg-red-50'
-              }`}
-              title="Apenas Saídas relacionadas a Pix Devolvido"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Pix Devolvidos</span>
-            </button>
-            <button
-              onClick={() => setFilters({ ...filters, type: 'ALL', page: 1 })}
-              className={`px-3 py-1.5 rounded-lg font-semibold transition-all whitespace-nowrap cursor-pointer ${
-                filters.type === 'ALL'
-                  ? 'bg-white text-slate-900 font-bold shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Todas
-            </button>
-          </div>
+      <div className="fluent-controls-section">
+        <div className="fluent-filter-tabs">
+          {/* Direction Tabs */}
+          <button
+            onClick={() => setFilters({ ...filters, type: 'CREDIT', page: 1 })}
+            className={`fluent-chip ${filters.type === 'CREDIT' ? 'active-green font-bold' : ''}`}
+          >
+            Entradas (Créditos)
+          </button>
+          <button
+            onClick={() => setFilters({ ...filters, type: 'DEBIT_RETURN', page: 1 })}
+            className={`fluent-chip flex items-center gap-1 ${filters.type === 'DEBIT_RETURN' ? 'active-red font-bold' : ''}`}
+          >
+            <RotateCcw className="w-3.5 h-3.5" /> Pix Devolvidos
+          </button>
+          <button
+            onClick={() => setFilters({ ...filters, type: 'ALL', page: 1 })}
+            className={`fluent-chip ${filters.type === 'ALL' ? 'bg-slate-200 text-slate-800 font-bold' : ''}`}
+          >
+            Todas
+          </button>
 
-          {/* Quick Status Tabs */}
-          <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs overflow-x-auto flex-1 max-w-2xl">
-            <button
-              onClick={() => setFilters({ ...filters, status: 'ALL', page: 1 })}
-              className={`px-2.5 py-1.5 rounded-lg font-semibold transition-all whitespace-nowrap cursor-pointer ${
-                filters.status === 'ALL'
-                  ? 'bg-white text-slate-900 font-bold shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Todos ({stats.total_count || 0})
-            </button>
-            <button
-              onClick={() => setFilters({ ...filters, status: 'PENDING', page: 1 })}
-              className={`px-2.5 py-1.5 rounded-lg font-semibold transition-all whitespace-nowrap cursor-pointer ${
-                filters.status === 'PENDING'
-                  ? 'bg-amber-100 text-amber-900 font-bold border border-amber-300 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Pendentes ({stats.pending_count || 0})
-            </button>
-            <button
-              onClick={() => setFilters({ ...filters, status: 'RECONCILED', page: 1 })}
-              className={`px-2.5 py-1.5 rounded-lg font-semibold transition-all whitespace-nowrap cursor-pointer ${
-                filters.status === 'RECONCILED'
-                  ? 'bg-emerald-100 text-emerald-900 font-bold border border-emerald-300 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Conciliadas ({stats.reconciled_count || 0})
-            </button>
-            <button
-              onClick={() => setFilters({ ...filters, status: 'RETURNED', page: 1 })}
-              className={`px-2.5 py-1.5 rounded-lg font-semibold transition-all whitespace-nowrap cursor-pointer ${
-                filters.status === 'RETURNED'
-                  ? 'bg-red-100 text-red-900 font-bold border border-red-300 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-              title="Pix estornados/devolvidos ao cliente"
-            >
-              Devoluções ({stats.returned_count || 0})
-            </button>
-            <button
-              onClick={() => setFilters({ ...filters, status: 'IGNORED', page: 1 })}
-              className={`px-2.5 py-1.5 rounded-lg font-semibold transition-all whitespace-nowrap cursor-pointer ${
-                filters.status === 'IGNORED'
-                  ? 'bg-slate-200 text-slate-800 font-bold border border-slate-300 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-              title="Lançamentos fora da prestação de contas (ex: depósitos em agência)"
-            >
-              Desconsideradas ({stats.ignored_count || 0})
-            </button>
-          </div>
+          <div style={{ width: '1px', height: '24px', background: 'var(--border-solid)', margin: '0 8px' }}></div>
 
+          {/* Status Tabs */}
+          <button
+            onClick={() => setFilters({ ...filters, status: 'ALL', page: 1 })}
+            className={`fluent-chip ${filters.status === 'ALL' ? 'bg-slate-200 font-bold' : ''}`}
+          >
+            Todos ({stats.total_count || 0})
+          </button>
+          <button
+            onClick={() => setFilters({ ...filters, status: 'PENDING', page: 1 })}
+            className={`fluent-chip ${filters.status === 'PENDING' ? 'active-yellow font-bold' : ''}`}
+          >
+            Pendentes ({stats.pending_count || 0})
+          </button>
+          <button
+            onClick={() => setFilters({ ...filters, status: 'RECONCILED', page: 1 })}
+            className={`fluent-chip ${filters.status === 'RECONCILED' ? 'active-green font-bold' : ''}`}
+          >
+            Conciliadas ({stats.reconciled_count || 0})
+          </button>
+          <button
+            onClick={() => setFilters({ ...filters, status: 'RETURNED', page: 1 })}
+            className={`fluent-chip ${filters.status === 'RETURNED' ? 'active-red font-bold' : ''}`}
+          >
+            Devoluções ({stats.returned_count || 0})
+          </button>
+          <button
+            onClick={() => setFilters({ ...filters, status: 'IGNORED', page: 1 })}
+            className={`fluent-chip ${filters.status === 'IGNORED' ? 'bg-slate-200 font-bold' : ''}`}
+          >
+            Desconsideradas ({stats.ignored_count || 0})
+          </button>
+        </div>
+        
+        <div className="flex flex-wrap items-center justify-between gap-2.5 mt-4">
           {/* Quick Filter: Unidentified Payer (Sem Remetente) */}
           <button
             onClick={() => setFilters({ ...filters, unidentified_payer: !filters.unidentified_payer, page: 1 })}
@@ -506,13 +483,13 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
           <input
             type="text"
             placeholder="Pesquisar por nome do pagador/cliente, descrição completa, CPF/CNPJ, FITID, motorista, valor ou número do documento..."
-            value={filters.search}
-            onChange={(e) => setFilters({ ...filters, search: e.target.value, page: 1 })}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
             className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-11 pr-10 py-2.5 text-sm font-medium text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-4 focus:ring-blue-100 transition-all shadow-2xs"
           />
-          {filters.search && (
+          {searchInput && (
             <button
-              onClick={() => setFilters({ ...filters, search: '', page: 1 })}
+              onClick={() => setSearchInput('')}
               className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-700 p-1 rounded-full hover:bg-slate-200 cursor-pointer transition-colors"
               title="Limpar pesquisa"
             >
@@ -794,9 +771,9 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
             </div>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-slate-800">
-              <thead className="bg-slate-100/80 text-slate-700 uppercase font-extrabold text-[10px] tracking-wider border-b border-slate-200">
+          <div className="fluent-table-container">
+            <table className="fluent-table">
+              <thead className="sticky top-0 z-10 bg-[#f9fbfd] shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
                 <tr>
                   <th className="py-3.5 px-4 w-12 text-center">
                     {isSessionActive ? (
@@ -816,6 +793,8 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                       />
                     )}
                   </th>
+                  
+                  <th className="py-3.5 px-2 text-center font-bold text-slate-400">#</th>
 
                   {/* Clickable Date Sort Header */}
                   <th className="py-3.5 px-4">
@@ -874,14 +853,15 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {transactions.map((tx) => {
+                {transactions.map((tx, index) => {
                   const isReconciled = tx.status === 'RECONCILED';
                   const isReturned = tx.status === 'RETURNED' || tx.is_pix_return === 1 || tx.is_pix_return === true;
                   const isIgnored = tx.status === 'IGNORED';
                   const isSelected = selectedTxIds.includes(tx.id);
                   const isPix = tx.is_pix === 1 || tx.is_pix === true;
                   const isDebit = tx.type === 'DEBIT';
-                  const isBlockedFromSelection = isReconciled || isReturned || isIgnored || isDebit;
+                  const isTemporarilyLockedByOther = tx.locked_by_user_id && tx.locked_by_user_id !== currentUser?.id;
+                  const isBlockedFromSelection = isReconciled || isReturned || isIgnored || isDebit || isTemporarilyLockedByOther;
 
                   return (
                     <tr
@@ -904,6 +884,8 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                           ? 'bg-slate-100/50 text-slate-500 line-through decoration-slate-400'
                           : isDebit
                           ? 'bg-amber-50/30 hover:bg-amber-50/60 cursor-pointer'
+                          : isTemporarilyLockedByOther
+                          ? 'bg-slate-50/50 text-slate-500 cursor-not-allowed'
                           : isSelected
                           ? 'bg-blue-50/90 border-l-4 border-l-blue-600 font-semibold cursor-pointer'
                           : isSessionActive
@@ -943,6 +925,13 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                           >
                             <RotateCcw className="w-3.5 h-3.5 text-red-700" />
                           </button>
+                        ) : isTemporarilyLockedByOther ? (
+                          <div
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-slate-100 text-slate-500 border border-slate-200"
+                            title={`Em uso: bloqueado temporariamente por ${tx.locked_by_user_name}`}
+                          >
+                            <Lock className="w-3.5 h-3.5 text-slate-400" />
+                          </div>
                         ) : isSessionActive ? (
                           <input
                             type="checkbox"
@@ -964,6 +953,10 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                             className="w-4 h-4 rounded text-red-600 bg-white border-slate-300 focus:ring-red-500 cursor-pointer"
                           />
                         )}
+                      </td>
+
+                      <td className="py-3 px-2 text-center text-slate-400 font-mono font-bold text-[10px]">
+                        {(pagination.page - 1) * pagination.limit + index + 1}
                       </td>
 
                       {/* Date */}
