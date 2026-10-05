@@ -227,6 +227,11 @@ function getCompanyId(req: express.Request): string {
   return comp ? String(comp).trim().toLowerCase() : 'matriz';
 }
 
+function formatName(name: string | undefined | null): string {
+  if (!name) return '';
+  return name.toLowerCase().replace(/(?:^|\s)\S/g, (a) => a.toUpperCase());
+}
+
 async function logAudit(
   action: string,
   entityType: string,
@@ -281,10 +286,11 @@ app.get('/api/users', async (req, res) => {
 
 app.post('/api/users', async (req, res) => {
   try {
-    const { name, email, role, pin, allowed_companies, actorUser } = req.body;
+    let { name, email, role, pin, allowed_companies, actorUser } = req.body;
     if (!name || !email || !role) {
       return res.status(400).json({ error: 'Nome, email e perfil são obrigatórios.' });
     }
+    name = formatName(name);
     if (actorUser && actorUser.role !== 'ADMIN') {
       return res.status(403).json({ error: 'Apenas Administradores podem cadastrar novos usuários.' });
     }
@@ -331,7 +337,7 @@ app.patch('/api/users/:id', async (req, res) => {
     const user = await queryOne(`SELECT * FROM users WHERE id = ?`, [id]);
     if (!user) return res.status(404).json({ error: 'Usuário não encontrado.' });
 
-    const newName = name !== undefined ? name.trim() : user.name;
+    const newName = name !== undefined ? formatName(name.trim()) : user.name;
     const newRole = role !== undefined ? role : user.role;
     const newActive = active !== undefined ? (active ? 1 : 0) : user.active;
     const newPin = pin !== undefined ? pin : user.pin;
@@ -597,10 +603,11 @@ app.get('/api/drivers', async (req, res) => {
 app.post('/api/drivers', async (req, res) => {
   try {
     const companyId = req.body.company_id || getCompanyId(req);
-    const { code, name, cpf, phone, vehicle_plate, vehicle_model, route, notes, actorUser } = req.body;
+    let { code, name, cpf, phone, vehicle_plate, vehicle_model, route, notes, actorUser } = req.body;
     if (!name || !vehicle_plate) {
       return res.status(400).json({ error: 'Nome do motorista e Placa do veículo são obrigatórios.' });
     }
+    name = formatName(name);
 
     // Auto-generate driver code if not provided
     let driverCode = code ? code.trim().toUpperCase() : '';
@@ -699,7 +706,7 @@ app.patch('/api/drivers/:id', async (req, res) => {
        WHERE id = ?`,
       [
         code !== undefined ? code.trim().toUpperCase() : driver.code,
-        name !== undefined ? name.trim() : driver.name,
+        name !== undefined ? formatName(name.trim()) : driver.name,
         cpf !== undefined ? cpf.trim() : driver.cpf,
         phone !== undefined ? phone.trim() : driver.phone,
         vehicle_plate !== undefined ? vehicle_plate.trim().toUpperCase() : driver.vehicle_plate,
@@ -1850,7 +1857,7 @@ app.post('/api/transactions/lock', async (req, res) => {
     // 1. Check if any is already locked by someone else or reconciled
     const placeholders = transaction_ids.map(() => '?').join(',');
     const checkStmt = db.prepare(
-      `SELECT id, status, locked_by_user_id, locked_by_user_name, locked_by_session_id, description, amount 
+      `SELECT id, status, locked_by_user_id, locked_by_user_name, locked_by_session_id, description, amount, driver_name 
        FROM transactions WHERE id IN (${placeholders}) AND company_id = ?`
     );
     checkStmt.bind([...transaction_ids, companyId]);
@@ -1863,7 +1870,8 @@ app.post('/api/transactions/lock', async (req, res) => {
     // Validate
     for (const tx of existing) {
       if (tx.status === 'RECONCILED' || tx.status === 'IGNORED' || tx.status === 'RETURNED') {
-        return res.status(409).json({ error: `Transação "${tx.description}" já foi processada (Status: ${tx.status}).` });
+        const translatedStatus = tx.status === 'RECONCILED' ? 'CONCILIADO' : (tx.status === 'IGNORED' ? 'DESCONSIDERADO' : 'ESTORNADO');
+        return res.status(409).json({ error: `Transação "${tx.description}" já foi processada (Status: ${translatedStatus}).` });
       }
       if (tx.locked_by_user_id && tx.locked_by_user_id !== actorUser.id) {
         return res.status(409).json({ error: `Transação "${tx.description}" (R$ ${Number(tx.amount).toFixed(2)}) já está sendo concilada por ${tx.locked_by_user_name}.` });
@@ -1885,12 +1893,16 @@ app.post('/api/transactions/lock', async (req, res) => {
     
     scheduleSaveDatabase();
     
+    // Get driver name from the first transaction if available
+    const driverName = existing.length > 0 && existing[0].driver_name ? existing[0].driver_name : null;
+
     broadcastEvent('TRANSACTIONS_LOCKED', {
       transactionIds: transaction_ids,
       lockedByUserName: actorUser.name,
       lockedByUserId: actorUser.id,
       company_id: companyId,
-      action: req.body.action
+      action: req.body.action,
+      driverName: driverName
     });
 
     res.json({ success: true, message: 'Transações bloqueadas com sucesso.' });
@@ -2027,6 +2039,41 @@ app.post('/api/reconciliation/start-session', async (req, res) => {
 
     broadcastEvent('RECONCILIATION_SESSION_STARTED', { session, company_id: companyId });
     res.status(201).json(session);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cancel active session and delete it
+app.post('/api/reconciliation/cancel-session', async (req, res) => {
+  try {
+    const { session_id, actorUser } = req.body;
+    const companyId = req.body.company_id || getCompanyId(req);
+
+    if (!session_id) {
+      return res.status(400).json({ error: 'ID da sessão não informado.' });
+    }
+    if (!actorUser) {
+      return res.status(401).json({ error: 'Operador não identificado.' });
+    }
+
+    const db = await getDatabase();
+    
+    db.run(
+      `DELETE FROM reconciliation_sessions WHERE id = ? AND company_id = ? AND status = 'IN_PROGRESS'`,
+      [session_id, companyId]
+    );
+    
+    scheduleSaveDatabase();
+
+    await logAudit('SESSION_DELETED', 'SESSION', session_id, actorUser, {
+      reason: 'Cancelado pelo usuario',
+      status: 'IN_PROGRESS'
+    }, companyId);
+
+    broadcastEvent('RECONCILIATION_SESSION_DELETED', { session_id, company_id: companyId });
+
+    res.json({ success: true, message: 'Sessão cancelada e apagada.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2549,6 +2596,36 @@ app.get('/api/database/status', async (req, res) => {
       lastSync: lastCloudSqlSync,
       databaseName: process.env.SQL_DB_NAME || 'cloud_sql_development_database'
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/database/capitalize', async (req, res) => {
+  try {
+    const db = await getDatabase();
+    let records = await queryAll("SELECT id, name FROM drivers");
+    for (const row of records) {
+      db.run("UPDATE drivers SET name = ? WHERE id = ?", [formatName(row.name), row.id]);
+    }
+    records = await queryAll("SELECT id, name FROM users");
+    for (const row of records) {
+      db.run("UPDATE users SET name = ? WHERE id = ?", [formatName(row.name), row.id]);
+    }
+    records = await queryAll("SELECT id, driver_name, operator_user_name FROM reconciliation_sessions");
+    for (const row of records) {
+      db.run("UPDATE reconciliation_sessions SET driver_name = ?, operator_user_name = ? WHERE id = ?", [formatName(row.driver_name), formatName(row.operator_user_name), row.id]);
+    }
+    records = await queryAll("SELECT id, driver_name, reconciled_by_user_name, locked_by_user_name, counterparty_name FROM transactions");
+    for (const row of records) {
+      db.run("UPDATE transactions SET driver_name = ?, reconciled_by_user_name = ?, locked_by_user_name = ?, counterparty_name = ? WHERE id = ?", [formatName(row.driver_name), formatName(row.reconciled_by_user_name), formatName(row.locked_by_user_name), formatName(row.counterparty_name), row.id]);
+    }
+    records = await queryAll("SELECT id, user_name FROM audit_logs");
+    for (const row of records) {
+      db.run("UPDATE audit_logs SET user_name = ? WHERE id = ?", [formatName(row.user_name), row.id]);
+    }
+    scheduleSaveDatabase();
+    res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

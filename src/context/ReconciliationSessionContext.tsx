@@ -158,9 +158,12 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
     setVoucherNumbers((prev) => ({ ...prev, [txId]: voucher }));
   };
 
-  const cancelSession = () => {
+  const cancelSession = async () => {
     if (selectedTxIds.length > 0 && currentUser) {
       api.unlockTransactions(selectedTxIds, currentUser).catch(console.error);
+    }
+    if (activeSessionId && currentUser) {
+      api.cancelReconciliationSession(activeSessionId, currentUser).catch(console.error);
     }
     setActiveDriver(null);
     setActiveSessionId(null);

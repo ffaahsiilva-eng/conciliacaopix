@@ -3,6 +3,7 @@ import { Driver } from '../types';
 import { useReconciliationSession } from '../context/ReconciliationSessionContext';
 import { Truck, Search, X, Check, ArrowRight, UserPlus, AlertCircle } from 'lucide-react';
 import { formatPlate } from '../services/api';
+import { LicensePlateBadge } from './LicensePlateBadge';
 
 interface StartSessionModalProps {
   isOpen: boolean;
@@ -137,9 +138,7 @@ export const StartSessionModal: React.FC<StartSessionModalProps> = ({
                       <div>
                         <div className="font-bold text-slate-900 flex items-center gap-2">
                           <span>{driver.name}</span>
-                          <span className="font-mono text-[11px] bg-slate-100 text-blue-800 px-1.5 py-0.5 rounded border border-slate-200">
-                            {formatPlate(driver.vehicle_plate)}
-                          </span>
+                          <LicensePlateBadge plate={driver.vehicle_plate} className="scale-75 origin-left" />
                         </div>
                         <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-2">
                           {driver.route && <span>Rota: {driver.route}</span>}

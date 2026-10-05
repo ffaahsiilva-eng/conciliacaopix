@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Transaction, BankAccount, Driver, TransactionFilters, TransactionStats } from '../types';
 import { api, formatCurrency, formatDate, formatDateTime, formatPlate, subscribeToRealtimeEvents } from '../services/api';
+import { LicensePlateBadge } from '../components/LicensePlateBadge';
 import { useAuth } from '../context/AuthContext';
 import { useCompany } from '../context/CompanyContext';
 import { useReconciliationSession } from '../context/ReconciliationSessionContext';
@@ -880,6 +881,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                   const isIgnored = tx.status === 'IGNORED';
                   const isSelected = selectedTxIds.includes(tx.id);
                   const isPix = tx.is_pix === 1 || tx.is_pix === true;
+                  const isCobranca = tx.description && tx.description.toLowerCase().includes('cobrança');
                   const isDebit = tx.type === 'DEBIT';
                   const isTemporarilyLockedByOther = tx.locked_by_user_id && tx.locked_by_user_id !== currentUser?.id;
                   const isBlockedFromSelection = isReconciled || isReturned || isIgnored || isDebit || isTemporarilyLockedByOther;
@@ -1010,16 +1012,17 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
 
                         <div className="font-semibold text-slate-900 text-xs break-words leading-relaxed">
                           {isPix && (
-                            <span className="bg-blue-100 text-blue-800 border border-blue-200 px-1 py-0.2 rounded text-[9px] font-mono font-bold mr-1.5 inline-block">
-                              PIX
-                            </span>
+                            <img src="/logopix.png" alt="PIX" className="h-[18px] inline-block mr-1.5 align-text-bottom" />
+                          )}
+                          {isCobranca && !isPix && (
+                            <img src="/cobrança.png" alt="Cobrança" className="h-[18px] inline-block mr-1.5 align-text-bottom" />
                           )}
                           {isReturned && (
                             <span className="bg-red-100 text-red-800 border border-red-300 px-1.5 py-0.5 rounded text-[9px] font-bold mr-1.5 inline-block">
                               ESTORNO / DEVOLUÇÃO TOTAL
                             </span>
                           )}
-                          {tx.returned_amount && tx.returned_amount > 0 && !isReturned && (
+                          {tx.returned_amount > 0 && !isReturned && (
                             <span className="bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.5 rounded text-[9px] font-bold mr-1.5 inline-block">
                               ✂ DEVOLUÇÃO PARCIAL (-{formatCurrency(tx.returned_amount)})
                             </span>
@@ -1068,7 +1071,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                           >
                             {tx.type === 'CREDIT' ? '+' : '-'} {formatCurrency(tx.amount)}
                           </span>
-                          {tx.returned_amount && tx.returned_amount > 0 && !isReturned && (
+                          {tx.returned_amount > 0 && !isReturned && (
                             <span className="text-[10px] text-slate-400 font-normal font-sans tracking-tight">
                               Original: {formatCurrency(tx.original_amount || (tx.amount + tx.returned_amount))}
                             </span>
@@ -1088,7 +1091,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                               <div className="text-[11px] text-slate-800 font-bold flex items-center gap-1">
                                 <Truck className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                                 <span className="truncate">
-                                  {tx.driver_name} ({formatPlate(tx.driver_plate)})
+                                  <span>{tx.driver_name}</span> <LicensePlateBadge plate={tx.driver_plate} className="scale-75 origin-left" />
                                 </span>
                               </div>
                             )}

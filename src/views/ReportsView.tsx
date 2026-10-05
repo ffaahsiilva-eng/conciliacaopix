@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api, formatCurrency, formatDate, formatDateTime, formatPlate } from '../services/api';
+import { LicensePlateBadge } from '../components/LicensePlateBadge';
 import { AuditLog, Driver, ReconciliationSession } from '../types';
 import { useCompany } from '../context/CompanyContext';
 import {
@@ -617,21 +618,21 @@ export const ReportsView: React.FC = () => {
                 <table className="w-full text-left text-xs text-slate-800">
                   <thead className="bg-slate-100 text-slate-700 uppercase font-extrabold text-[10px] tracking-wider border-b border-slate-200">
                     <tr>
-                      <th className="py-3.5 px-4">Código</th>
-                      <th className="py-3.5 px-4">Nome do Motorista</th>
-                      <th className="py-3.5 px-4">Placa</th>
-                      <th className="py-3.5 px-4">Rota</th>
-                      <th className="py-3.5 px-4 text-center">Pix Conferidos</th>
-                      <th className="py-3.5 px-4 text-center">Acertos</th>
-                      <th className="py-3.5 px-4 text-right">Pix Conciliado (R$)</th>
-                      <th className="py-3.5 px-4 text-right text-red-700 font-extrabold">
+                      <th className="py-3.5 px-2">Código</th>
+                      <th className="py-3.5 px-2">Nome do Motorista</th>
+                      <th className="py-3.5 px-2">Placa</th>
+                      <th className="py-3.5 px-2">Rota</th>
+                      <th className="py-3.5 px-2 text-center">Pix Conferidos</th>
+                      <th className="py-3.5 px-2 text-center">Acertos</th>
+                      <th className="py-3.5 px-2 text-right">Pix Conciliado (R$)</th>
+                      <th className="py-3.5 px-2 text-right text-red-700 font-extrabold">
                         Valor Faltante (R$)
                       </th>
-                      <th className="py-3.5 px-4 text-right text-slate-900 font-extrabold">
+                      <th className="py-3.5 px-2 text-right text-slate-900 font-extrabold">
                         Total Prestação (R$)
                       </th>
-                      <th className="py-3.5 px-4">Período de Recebimentos</th>
-                      <th className="py-3.5 px-4 text-center">Ações</th>
+                      <th className="py-3.5 px-2">Período de Recebimentos</th>
+                      <th className="py-3.5 px-2 text-center">Ações</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -646,30 +647,30 @@ export const ReportsView: React.FC = () => {
                             hasMissing ? 'bg-amber-50/20' : ''
                           }`}
                         >
-                          <td className="py-3.5 px-4 font-mono font-extrabold text-blue-700">
+                          <td className="py-3.5 px-2 font-mono font-extrabold text-blue-700">
                             {d.driver_code}
                           </td>
-                          <td className="py-3.5 px-4 font-bold text-slate-900 whitespace-nowrap">
+                          <td className="py-3.5 px-2 font-bold text-slate-900 whitespace-nowrap">
                             {d.driver_name}
                           </td>
-                          <td className="py-3.5 px-4 font-mono font-bold text-slate-700 whitespace-nowrap">
-                            {formatPlate(d.vehicle_plate)}
+                          <td className="py-3.5 px-2 whitespace-nowrap">
+                            <LicensePlateBadge plate={d.vehicle_plate} />
                           </td>
-                          <td className="py-3.5 px-4 text-slate-600">{d.route || '-'}</td>
-                          <td className="py-3.5 px-4 text-center font-bold">
+                          <td className="py-3.5 px-2 text-slate-600">{d.route || '-'}</td>
+                          <td className="py-3.5 px-2 text-center font-bold">
                             <span className="bg-blue-50 text-blue-800 px-2 py-0.5 rounded-full border border-blue-200 font-extrabold">
                               {d.total_pix_reconciled}
                             </span>
                           </td>
-                          <td className="py-3.5 px-4 text-center text-slate-700 font-semibold">
+                          <td className="py-3.5 px-2 text-center text-slate-700 font-semibold">
                             {d.total_sessions}
                           </td>
-                          <td className="py-3.5 px-4 text-right font-mono font-extrabold text-emerald-600 text-xs whitespace-nowrap">
+                          <td className="py-3.5 px-2 text-right font-mono font-extrabold text-emerald-600 text-xs whitespace-nowrap">
                             {formatCurrency(d.total_amount_reconciled)}
                           </td>
 
                           {/* COLUNA DO VALOR FALTANTE */}
-                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                          <td className="py-3.5 px-2 text-right whitespace-nowrap">
                             {hasMissing ? (
                               <span className="inline-flex items-center gap-1 font-mono font-extrabold text-red-600 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full text-xs">
                                 <AlertTriangle className="w-3 h-3 text-red-500 shrink-0" />
@@ -681,15 +682,15 @@ export const ReportsView: React.FC = () => {
                           </td>
 
                           {/* COLUNA DA PRESTAÇÃO TOTAL ESPERADA */}
-                          <td className="py-3.5 px-4 text-right font-mono font-extrabold text-slate-900 text-xs whitespace-nowrap">
+                          <td className="py-3.5 px-2 text-right font-mono font-extrabold text-slate-900 text-xs whitespace-nowrap">
                             {formatCurrency(expectedSum)}
                           </td>
 
-                          <td className="py-3.5 px-4 font-mono text-[11px] text-slate-500 whitespace-nowrap">
-                            {formatDate(d.first_receipt_date)} até {formatDate(d.last_receipt_date)}
+                          <td className="py-3.5 px-2 font-mono text-[10px] text-slate-500 min-w-[120px]">
+                            {formatDate(d.first_receipt_date)} <br/> até {formatDate(d.last_receipt_date)}
                           </td>
 
-                          <td className="py-3.5 px-4 text-center">
+                          <td className="py-3.5 px-2 text-center">
                             <button
                               onClick={() => handleOpenDriverSessions(d)}
                               className="inline-flex items-center space-x-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer"
@@ -727,13 +728,13 @@ export const ReportsView: React.FC = () => {
               <table className="w-full text-left text-xs text-slate-800">
                 <thead className="bg-slate-100 text-slate-700 uppercase font-extrabold text-[10px] tracking-wider border-b border-slate-200">
                   <tr>
-                    <th className="py-3.5 px-4">Instituição Bancária</th>
-                    <th className="py-3.5 px-4 text-center">Total Lançamentos</th>
-                    <th className="py-3.5 px-4 text-right">Volume Total</th>
-                    <th className="py-3.5 px-4 text-right text-emerald-700">Conciliado (R$)</th>
-                    <th className="py-3.5 px-4 text-right text-amber-700">Pendente (R$)</th>
-                    <th className="py-3.5 px-4 text-center">Taxa Conciliação</th>
-                    <th className="py-3.5 px-4 text-right text-blue-700">Volume Pix</th>
+                    <th className="py-3.5 px-2">Instituição Bancária</th>
+                    <th className="py-3.5 px-2 text-center">Total Lançamentos</th>
+                    <th className="py-3.5 px-2 text-right">Volume Total</th>
+                    <th className="py-3.5 px-2 text-right text-emerald-700">Conciliado (R$)</th>
+                    <th className="py-3.5 px-2 text-right text-amber-700">Pendente (R$)</th>
+                    <th className="py-3.5 px-2 text-center">Taxa Conciliação</th>
+                    <th className="py-3.5 px-2 text-right text-blue-700">Volume Pix</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -745,21 +746,21 @@ export const ReportsView: React.FC = () => {
 
                     return (
                       <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                        <td className="py-3.5 px-4 font-bold text-slate-900 flex items-center gap-2">
+                        <td className="py-3.5 px-2 font-bold text-slate-900 flex items-center gap-2">
                           <Building2 className="w-4 h-4 text-blue-600" />
                           <span>{b.bank_name}</span>
                         </td>
-                        <td className="py-3.5 px-4 text-center font-mono">{b.total_transactions}</td>
-                        <td className="py-3.5 px-4 text-right font-mono font-bold text-slate-900">
+                        <td className="py-3.5 px-2 text-center font-mono">{b.total_transactions}</td>
+                        <td className="py-3.5 px-2 text-right font-mono font-bold text-slate-900">
                           {formatCurrency(b.total_volume)}
                         </td>
-                        <td className="py-3.5 px-4 text-right font-mono font-extrabold text-emerald-600">
+                        <td className="py-3.5 px-2 text-right font-mono font-extrabold text-emerald-600">
                           {formatCurrency(b.reconciled_sum)}
                         </td>
-                        <td className="py-3.5 px-4 text-right font-mono font-extrabold text-amber-600">
+                        <td className="py-3.5 px-2 text-right font-mono font-extrabold text-amber-600">
                           {formatCurrency(b.pending_sum)}
                         </td>
-                        <td className="py-3.5 px-4 text-center">
+                        <td className="py-3.5 px-2 text-center">
                           <div className="flex items-center justify-center space-x-1.5">
                             <div className="w-16 bg-slate-100 rounded-full h-2 overflow-hidden border border-slate-200">
                               <div
@@ -770,7 +771,7 @@ export const ReportsView: React.FC = () => {
                             <span className="font-extrabold text-slate-800">{rate}%</span>
                           </div>
                         </td>
-                        <td className="py-3.5 px-4 text-right font-mono font-extrabold text-blue-600">
+                        <td className="py-3.5 px-2 text-right font-mono font-extrabold text-blue-600">
                           {formatCurrency(b.pix_sum)}
                         </td>
                       </tr>
@@ -897,11 +898,11 @@ export const ReportsView: React.FC = () => {
               <table className="w-full text-left text-xs text-slate-800">
                 <thead className="bg-slate-100 text-slate-700 uppercase font-extrabold text-[10px] tracking-wider border-b border-slate-200 sticky top-0">
                   <tr>
-                    <th className="py-3.5 px-4">Data / Hora</th>
-                    <th className="py-3.5 px-4">Ação</th>
-                    <th className="py-3.5 px-4">Usuário</th>
-                    <th className="py-3.5 px-4">Perfil</th>
-                    <th className="py-3.5 px-4">Auditoria da Operação & Valores</th>
+                    <th className="py-3.5 px-2">Data / Hora</th>
+                    <th className="py-3.5 px-2">Ação</th>
+                    <th className="py-3.5 px-2">Usuário</th>
+                    <th className="py-3.5 px-2">Perfil</th>
+                    <th className="py-3.5 px-2">Auditoria da Operação & Valores</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -912,21 +913,21 @@ export const ReportsView: React.FC = () => {
 
                     return (
                       <tr key={log.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="py-3 px-4 whitespace-nowrap text-slate-500 font-mono text-[11px]">
+                        <td className="py-3 px-2 whitespace-nowrap text-slate-500 font-mono text-[11px]">
                           {formatDateTime(log.created_at)}
                         </td>
-                        <td className="py-3 px-4 whitespace-nowrap">
+                        <td className="py-3 px-2 whitespace-nowrap">
                           <span className="bg-blue-50 text-blue-800 font-bold px-2 py-0.5 rounded text-[10px] border border-blue-200">
                             {log.action}
                           </span>
                         </td>
-                        <td className="py-3 px-4 font-bold text-slate-900 whitespace-nowrap">
+                        <td className="py-3 px-2 font-bold text-slate-900 whitespace-nowrap">
                           {log.user_name}
                         </td>
-                        <td className="py-3 px-4 whitespace-nowrap">
+                        <td className="py-3 px-2 whitespace-nowrap">
                           <span className="text-[10px] text-slate-500 font-bold">{log.user_role}</span>
                         </td>
-                        <td className="py-3 px-4 text-slate-700 text-xs">
+                        <td className="py-3 px-2 text-slate-700 text-xs">
                           {isReconciliation && parsed ? (
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="font-bold text-slate-900">
@@ -934,7 +935,7 @@ export const ReportsView: React.FC = () => {
                               </span>
                               {parsed.plate && (
                                 <span className="font-mono text-blue-800 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200 text-[10px]">
-                                  {formatPlate(parsed.plate)}
+                                <span className="flex items-center gap-2">Placa: <LicensePlateBadge plate={parsed.plate} /></span>
                                 </span>
                               )}
                               <span className="text-slate-500">
@@ -986,7 +987,7 @@ export const ReportsView: React.FC = () => {
                     Acertos de Prestação de Contas • {inspectingDriver.driver_name}
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Placa: {formatPlate(inspectingDriver.vehicle_plate)} • Rota: {inspectingDriver.route || 'Geral'}
+                    <span className="flex items-center gap-2">Placa: <LicensePlateBadge plate={inspectingDriver.vehicle_plate} /></span> • Rota: {inspectingDriver.route || 'Geral'}
                   </p>
                 </div>
               </div>

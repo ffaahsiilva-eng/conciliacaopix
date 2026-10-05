@@ -64,6 +64,13 @@ export const formatCpf = (cpf: string | undefined | null): string => {
   return cpf;
 };
 
+export const formatName = (name: string | undefined | null): string => {
+  if (!name) return '';
+  // Support formatting "john doe" -> "John Doe", also handling lowercasing properly
+  return name.toLowerCase().replace(/(?:^|\s)\S/g, (a) => a.toUpperCase());
+};
+
+
 // SSE real-time event subscription
 type EventCallback = (event: { type: string; payload: any; timestamp: string }) => void;
 const eventListeners: EventCallback[] = [];
@@ -543,6 +550,17 @@ export const api = {
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Falha ao iniciar sessão de conciliação');
+    return json;
+  },
+
+  async cancelReconciliationSession(sessionId: string, actorUser: User, companyId?: string): Promise<{ success: boolean }> {
+    const res = await customFetch('/api/reconciliation/cancel-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, actorUser, company_id: companyId || globalCompanyId })
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Falha ao cancelar sessão');
     return json;
   },
 

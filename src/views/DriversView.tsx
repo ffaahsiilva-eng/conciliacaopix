@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Driver } from '../types';
 import { formatCurrency, formatPlate } from '../services/api';
+import { LicensePlateBadge } from '../components/LicensePlateBadge';
 import { useAuth } from '../context/AuthContext';
 import { useCompany } from '../context/CompanyContext';
 import { useReconciliationSession } from '../context/ReconciliationSessionContext';
@@ -172,9 +173,7 @@ export const DriversView: React.FC<DriversViewProps> = ({
                       <div>
                         <h4 className="text-sm font-bold text-slate-900 leading-tight">{driver.name}</h4>
                         <div className="flex items-center gap-1.5 mt-0.5">
-                          <span className="font-mono text-xs font-bold bg-slate-100 px-2 py-0.5 rounded text-blue-800 border border-slate-200">
-                            {formatPlate(driver.vehicle_plate)}
-                          </span>
+                          <LicensePlateBadge plate={driver.vehicle_plate} className="scale-75 origin-left" />
                           {driver.active === 0 && (
                             <span className="text-[10px] bg-red-100 text-red-800 border border-red-200 px-1.5 py-0.2 rounded font-bold">
                               Inativo

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useReconciliationSession } from '../context/ReconciliationSessionContext';
 import { Truck, CheckCheck, XCircle, FileText, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { formatCurrency, formatPlate } from '../services/api';
+import { LicensePlateBadge } from './LicensePlateBadge';
 
 interface DriverSessionBarProps {
   onOpenFinishModal: () => void;
@@ -22,6 +23,12 @@ export const DriverSessionBar: React.FC<DriverSessionBarProps> = ({ onOpenFinish
   } = useReconciliationSession();
 
   const [isExpanded, setIsExpanded] = useState(false);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+
+  const confirmCancel = async () => {
+    await cancelSession();
+    setShowCancelModal(false);
+  };
 
   if (!isSessionActive || !activeDriver) {
     return null;
@@ -41,9 +48,7 @@ export const DriverSessionBar: React.FC<DriverSessionBarProps> = ({ onOpenFinish
                 <span className="text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded-full uppercase tracking-wider font-mono">
                   Sessão Ativa
                 </span>
-                <span className="text-xs text-slate-700 font-mono font-bold bg-white px-2 py-0.5 rounded border border-slate-200">
-                  Placa: {formatPlate(activeDriver.vehicle_plate)}
-                </span>
+                <span className="flex items-center gap-2 text-xs font-bold text-slate-700">Placa: <LicensePlateBadge plate={activeDriver.vehicle_plate} className="scale-75 origin-left" /></span>
                 {activeDriver.route && (
                   <span className="text-xs text-slate-600 hidden sm:inline font-medium">
                     • {activeDriver.route}
@@ -97,7 +102,7 @@ export const DriverSessionBar: React.FC<DriverSessionBarProps> = ({ onOpenFinish
             )}
 
             <button
-              onClick={cancelSession}
+              onClick={() => setShowCancelModal(true)}
               className="text-xs text-red-600 hover:text-red-800 hover:bg-red-50 border border-red-200 bg-white px-3 py-2 rounded-xl transition-colors flex items-center space-x-1 font-semibold cursor-pointer"
             >
               <XCircle className="w-3.5 h-3.5" />
@@ -144,6 +149,37 @@ export const DriverSessionBar: React.FC<DriverSessionBarProps> = ({ onOpenFinish
           </div>
         )}
       </div>
+
+      {/* Cancel Confirmation Modal */}
+      {showCancelModal && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md shadow-2xl text-slate-800 overflow-hidden animate-fade-in">
+            <div className="p-6">
+              <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center text-red-600 mb-4 mx-auto">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 text-center mb-2">Cancelar Conciliação</h3>
+              <p className="text-sm text-slate-600 text-center mb-6">
+                Tem certeza que deseja cancelar esta conciliação? As transações marcadas e não salvas voltarão a ficar disponíveis.
+              </p>
+              <div className="flex items-center space-x-3">
+                <button
+                  onClick={() => setShowCancelModal(false)}
+                  className="flex-1 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 font-bold py-2.5 rounded-xl transition-colors cursor-pointer"
+                >
+                  Voltar
+                </button>
+                <button
+                  onClick={confirmCancel}
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-2.5 rounded-xl transition-colors cursor-pointer"
+                >
+                  Sim, Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

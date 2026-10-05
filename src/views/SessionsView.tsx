@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ReconciliationSession, Transaction, Driver } from '../types';
 import { api, formatCurrency, formatDateTime, formatPlate, formatDate } from '../services/api';
+import { LicensePlateBadge } from '../components/LicensePlateBadge';
 import { useAuth } from '../context/AuthContext';
 import { useCompany } from '../context/CompanyContext';
 import jsPDF from 'jspdf';
@@ -602,14 +603,14 @@ export const SessionsView: React.FC = () => {
                     <td className="py-3.5 px-4 font-mono text-slate-600 whitespace-nowrap font-medium">
                       {formatDateTime(s.completed_at || s.started_at)}
                     </td>
-                    <td className="py-3.5 px-4 font-bold text-slate-900 whitespace-nowrap flex items-center gap-2">
+                    <td className="py-3.5 px-4 font-bold text-slate-900 whitespace-nowrap flex items-center gap-2 capitalize">
                       <Truck className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                       <span>{s.driver_name}</span>
                     </td>
-                    <td className="py-3.5 px-4 font-mono font-bold text-blue-800 whitespace-nowrap">
-                      {formatPlate(s.driver_plate)}
+                    <td className="py-3.5 px-4 whitespace-nowrap">
+                      <LicensePlateBadge plate={s.driver_plate} />
                     </td>
-                    <td className="py-3.5 px-4 text-slate-700 whitespace-nowrap">
+                    <td className="py-3.5 px-4 text-slate-700 whitespace-nowrap capitalize">
                       {s.operator_user_name}
                     </td>
                     <td className="py-3.5 px-4 text-center font-bold">
@@ -740,9 +741,9 @@ export const SessionsView: React.FC = () => {
                   <p className="text-sm font-bold text-slate-900 mt-0.5">
                     {selectedSession.session.driver_name}
                   </p>
-                  <p className="text-xs text-blue-700 font-mono font-bold">
+                  <div className="text-xs text-blue-700 font-mono font-bold mt-0.5">
                     Placa: {formatPlate(selectedSession.session.driver_plate)}
-                  </p>
+                  </div>
                 </div>
                 <div>
                   <p className="text-[10px] text-slate-500 uppercase font-bold">Operador Conferente</p>
@@ -935,7 +936,7 @@ export const SessionsView: React.FC = () => {
 
             <div className="p-6 space-y-3.5 text-xs">
               <p className="text-slate-700 leading-relaxed">
-                Você tem certeza que deseja excluir o acerto do motorista <strong>{sessionToDelete.driver_name}</strong> (Placa {formatPlate(sessionToDelete.driver_plate)}) concluído em {formatDateTime(sessionToDelete.completed_at || sessionToDelete.started_at)}?
+                Você tem certeza que deseja excluir o acerto do motorista <strong>{sessionToDelete.driver_name}</strong> (<LicensePlateBadge plate={sessionToDelete.driver_plate} className="inline-block align-middle mx-1" />) concluído em {formatDateTime(sessionToDelete.completed_at || sessionToDelete.started_at)}?
               </p>
               <p className="text-red-700 font-bold bg-red-50 p-2 rounded-lg border border-red-200">
                 Atenção: Todos os lançamentos vinculados a este acerto serão liberados novamente para o extrato (status "Pendente").

@@ -94,12 +94,14 @@ function AppContent() {
 
       if (event.type === 'TRANSACTIONS_LOCKED') {
         if (event.payload?.action === 'DETAILS' || event.payload?.action === 'EDIT') {
-          addToast(`Usuário ${event.payload?.lockedByUserName} está editando um PIX.`, 'info');
+          const driverName = event.payload?.driverName;
+          addToast(`Usuário ${event.payload?.lockedByUserName} está editando um PIX${driverName ? ` do motorista ${driverName}` : ''}.`, 'info');
         }
       } else if (event.type === 'RECONCILIATION_COMPLETED') {
-        addToast(`Usuário ${event.payload?.operatorName} salvou uma conciliação.`, 'success');
+        addToast(`Usuário ${event.payload?.operatorName} salvou uma conciliação do motorista ${event.payload?.driverName}.`, 'success');
       } else if (event.type === 'RECONCILIATION_SESSION_STARTED') {
-        addToast(`Usuário ${event.payload?.session?.operator_name} criou uma nova conciliação.`, 'info');
+        const session = event.payload?.session;
+        addToast(`${session?.operator_user_name} está editando um PIX do motorista ${session?.driver_name}.`, 'info');
       }
     });
 

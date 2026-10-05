@@ -11,6 +11,7 @@ import {
   Lock
 } from 'lucide-react';
 import { formatCurrency, formatPlate, formatDate } from '../services/api';
+import { LicensePlateBadge } from './LicensePlateBadge';
 
 interface FinishSessionModalProps {
   isOpen: boolean;
@@ -95,8 +96,8 @@ export const FinishSessionModal: React.FC<FinishSessionModalProps> = ({
                 <p className="text-[10px] text-blue-800 uppercase font-extrabold">Motorista Vinculado</p>
                 <h4 className="text-base font-extrabold text-slate-900">{activeDriver.name}</h4>
                 <div className="flex items-center gap-2 text-xs text-slate-600 mt-0.5">
-                  <span className="font-mono bg-white px-2 py-0.5 rounded text-blue-800 border border-slate-200 font-bold">
-                    Placa: {formatPlate(activeDriver.vehicle_plate)}
+                  <span className="flex items-center gap-2">
+                    Placa: <LicensePlateBadge plate={activeDriver.vehicle_plate} className="scale-75 origin-left" />
                   </span>
                   {activeDriver.route && <span>• {activeDriver.route}</span>}
                 </div>

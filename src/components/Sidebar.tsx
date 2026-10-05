@@ -49,16 +49,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'sessions' as const, label: 'Acertos Finalizados', description: 'Histórico & comprovantes', icon: FileSpreadsheet },
     { id: 'batches' as const, label: 'Extratos Importados', description: 'Lotes OFX e CSV', icon: UploadCloud },
     { id: 'reports' as const, label: 'Relatórios & Auditoria', description: 'Totais e conformidade', icon: BarChart3 },
-    { id: 'users' as const, label: 'Controle de Usuários', description: 'Níveis de permissão', icon: Users }
+    ...(currentUser?.role === 'ADMIN' ? [{ id: 'users' as const, label: 'Controle de Usuários', description: 'Níveis de permissão', icon: Users }] : [])
   ];
 
   if (isCollapsed) return null; // In this Fluent Design we keep it simple for now, or just don't collapse.
 
   return (
     <aside className="fluent-sidebar">
-      <div className="fluent-brand">
-        <div className="fluent-brand-icon">
-          <ShieldCheck className="w-5 h-5" />
+      <div className="fluent-brand" style={{ gap: '2px', marginLeft: '-4px' }}>
+        <div className="fluent-brand-icon" style={{ background: 'transparent', width: '48px', height: '48px', padding: 0 }}>
+          <img src="/caminhaoagua.png" alt="Logo" className="w-full h-full object-contain" />
         </div>
         <div className="fluent-brand-name">
           ConciliaPix <span style={{color: 'var(--accent-blue)', fontWeight: 600}}>PRO</span>
