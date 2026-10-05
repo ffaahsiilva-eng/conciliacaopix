@@ -107,7 +107,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           {canSwitchCompany && (
             <button
               onClick={() => setCurrentCompany(isMatriz ? 'filial' : 'matriz')}
-              className="btn btn-secondary"
+              className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl py-2 px-4 flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all font-semibold"
             >
               {isMatriz ? '🏢 Matriz' : '🏪 Filial'}
             </button>
@@ -116,13 +116,13 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           <span className="fluent-status-badge">Conectado</span>
 
           {canImport && (
-            <button onClick={onOpenUpload} className="btn btn-secondary">
+            <button onClick={onOpenUpload} className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl py-2 px-4 flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all font-semibold">
               ☁️ Importar Extrato
             </button>
           )}
 
           {canReconcile && !isSessionActive && (
-            <button onClick={onOpenStartSession} className="btn btn-primary">
+            <button onClick={onOpenStartSession} className="border-2 border-blue-700 text-blue-800 bg-white hover:bg-blue-50 font-bold rounded-xl py-2 px-4 flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all">
               Nova Conciliação
             </button>
           )}
@@ -131,7 +131,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           <div className="relative">
             <button
               onClick={() => setUserDropdownOpen(!userDropdownOpen)}
-              className="btn btn-secondary"
+              className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl cursor-pointer shadow-sm transition-all"
               style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px' }}
             >
               <div className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs">
