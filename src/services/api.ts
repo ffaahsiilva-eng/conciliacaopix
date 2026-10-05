@@ -124,13 +124,21 @@ const customFetch = async (url: RequestInfo | URL, init?: RequestInit): Promise<
     headers.set('x-company-id', globalCompanyId);
   }
 
+  // Bypass browser cache for GET requests
+  let fetchUrl = typeof url === 'string' ? url : url.toString();
+  const method = init?.method || 'GET';
+  if (method.toUpperCase() === 'GET') {
+    const separator = fetchUrl.includes('?') ? '&' : '?';
+    fetchUrl += `${separator}_t=${Date.now()}`;
+  }
+
   const controller = new AbortController();
   // 10s Timeout defined for performance & infinite loading resolution
   const timeoutId = setTimeout(() => controller.abort(), 10000);
 
   try {
     const signal = init?.signal || controller.signal;
-    const response = await fetch(url, { ...init, headers, signal });
+    const response = await fetch(fetchUrl, { ...init, headers, signal });
     clearTimeout(timeoutId);
     return response;
   } catch (err: any) {
