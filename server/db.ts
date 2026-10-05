@@ -305,7 +305,7 @@ export function scheduleSaveDatabase(): void {
   }
   saveDebounceTimer = setTimeout(() => {
     persistDatabaseSync();
-  }, 150);
+  }, 3000);
 }
 
 // Graceful process exit handler to flush to Cloud SQL before container shuts down
