@@ -1889,7 +1889,8 @@ app.post('/api/transactions/lock', async (req, res) => {
       transactionIds: transaction_ids,
       lockedByUserName: actorUser.name,
       lockedByUserId: actorUser.id,
-      company_id: companyId
+      company_id: companyId,
+      action: req.body.action
     });
 
     res.json({ success: true, message: 'Transações bloqueadas com sucesso.' });

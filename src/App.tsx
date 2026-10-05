@@ -19,7 +19,7 @@ import { UsersView } from './views/UsersView';
 import { BackupView } from './views/BackupView';
 import { BankAccount, Driver, Transaction } from './types';
 import { api, formatCurrency, subscribeToRealtimeEvents } from './services/api';
-import { CheckCircle2, Truck, X } from 'lucide-react';
+import { CheckCircle2, Truck, X, Activity } from 'lucide-react';
 import { LoginScreen } from './components/LoginScreen';
 
 function AppContent() {
@@ -67,6 +67,16 @@ function AppContent() {
       fetchAuxData();
     }
   }, [currentCompany?.id, currentUser?.id]);
+  // Global popup toasts
+  const [globalToasts, setGlobalToasts] = useState<{id: number; message: string; type: 'info'|'success'}[]>([]);
+
+  const addToast = (message: string, type: 'info'|'success' = 'info') => {
+    const id = Date.now();
+    setGlobalToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setGlobalToasts(prev => prev.filter(t => t.id !== id));
+    }, 5000);
+  };
 
   useEffect(() => {
     // Listen to real-time driver updates, reconciliation completion, and database cleans/restores
@@ -78,6 +88,16 @@ function AppContent() {
         event.type === 'DATABASE_RESTORED'
       ) {
         api.getDrivers().then(setDrivers).catch(console.error);
+      }
+
+      if (event.type === 'TRANSACTIONS_LOCKED') {
+        if (event.payload?.action === 'DETAILS' || event.payload?.action === 'EDIT') {
+          addToast(`Usuário ${event.payload?.lockedByUserName} está editando um PIX.`, 'info');
+        }
+      } else if (event.type === 'RECONCILIATION_COMPLETED') {
+        addToast(`Usuário ${event.payload?.operatorName} salvou uma conciliação.`, 'success');
+      } else if (event.type === 'RECONCILIATION_SESSION_STARTED') {
+        addToast(`Usuário ${event.payload?.session?.operator_name} criou uma nova conciliação.`, 'info');
       }
     });
 
@@ -293,6 +313,16 @@ function AppContent() {
         transaction={txToReopen}
         onSuccess={fetchAuxData}
       />
+
+      {/* Global Toasts (Bottom Right) */}
+      <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
+        {globalToasts.map(toast => (
+          <div key={toast.id} className={`pointer-events-auto px-4 py-3 rounded-xl shadow-xl border animate-fade-in flex items-center gap-3 ${toast.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-blue-50 border-blue-200 text-blue-800'}`}>
+            {toast.type === 'success' ? <CheckCircle2 className="w-5 h-5 text-emerald-600" /> : <Activity className="w-5 h-5 text-blue-600 animate-pulse" />}
+            <span className="font-semibold text-sm max-w-xs">{toast.message}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

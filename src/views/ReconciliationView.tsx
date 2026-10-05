@@ -196,7 +196,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
   const handleOpenTransactionView = async (tx: Transaction, type: 'DETAILS' | 'EDIT') => {
     if (!currentUser) return;
     try {
-      await api.lockTransactions([tx.id], activeSessionId || null, currentUser);
+      await api.lockTransactions([tx.id], activeSessionId || null, currentUser, type);
       if (type === 'DETAILS') setSelectedTxForDetails(tx);
       if (type === 'EDIT') setTxToEdit(tx);
     } catch (err: any) {
