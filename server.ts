@@ -2866,12 +2866,12 @@ async function startServer() {
         const db = await getDatabase();
         const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
         const stale = await queryAll(
-          `SELECT id FROM transactions WHERE locked_by_user_id IS NOT NULL AND locked_at IS NOT NULL AND locked_at < ? AND status = 'PENDING'`,
+          `SELECT id FROM transactions WHERE locked_by_user_id IS NOT NULL AND (locked_at IS NULL OR locked_at < ?) AND status = 'PENDING'`,
           [fiveMinAgo]
         );
         if (stale.length > 0) {
           db.run(
-            `UPDATE transactions SET locked_at = NULL, locked_by_user_id = NULL, locked_by_user_name = NULL, locked_by_session_id = NULL WHERE locked_by_user_id IS NOT NULL AND locked_at IS NOT NULL AND locked_at < ? AND status = 'PENDING'`,
+            `UPDATE transactions SET locked_at = NULL, locked_by_user_id = NULL, locked_by_user_name = NULL, locked_by_session_id = NULL WHERE locked_by_user_id IS NOT NULL AND (locked_at IS NULL OR locked_at < ?) AND status = 'PENDING'`,
             [fiveMinAgo]
           );
           scheduleSaveDatabase();
