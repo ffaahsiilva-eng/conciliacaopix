@@ -139,23 +139,31 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
   const [debitTxForLinking, setDebitTxForLinking] = useState<Transaction | null>(null);
   const [selectedTxForDetails, setSelectedTxForDetails] = useState<Transaction | null>(null);
 
-  const fetchTransactions = async () => {
+  const fetchTransactions = async (isBackground = false) => {
     try {
-      setLoading(true);
+      if (!isBackground) setLoading(true);
       setErrorMsg(null);
       const res = await api.getTransactions(filters);
       setTransactions(res.transactions);
       setStats(res.stats);
       setPagination(res.pagination);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Erro ao carregar transações do extrato.');
+      if (!isBackground) setErrorMsg(err.message || 'Erro ao carregar transações do extrato.');
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   };
 
   useEffect(() => {
     fetchTransactions();
+  }, [filters, currentCompany?.id]);
+
+  // Auto-refresh background poll every 10 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchTransactions(true);
+    }, 10000);
+    return () => clearInterval(interval);
   }, [filters, currentCompany?.id]);
 
   useEffect(() => {
@@ -732,11 +740,18 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
           )}
         </div>
 
-        <div className="flex items-center space-x-2 text-slate-600">
+        <div className="flex items-center space-x-3 text-slate-600">
           <span>
             Exibindo <strong>{transactions.length}</strong> de{' '}
             <strong>{pagination.totalItems}</strong> lançamentos
           </span>
+          <button
+            onClick={() => fetchTransactions(true)}
+            title="Atualizar dados agora"
+            className="p-1.5 hover:bg-slate-100 border border-transparent hover:border-slate-200 rounded-lg text-slate-400 hover:text-indigo-600 transition-all active:scale-95 flex items-center gap-1.5"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
