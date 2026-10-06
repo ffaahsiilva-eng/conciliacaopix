@@ -74,6 +74,11 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
 
   const startSession = async (driver: Driver, notes?: string): Promise<boolean> => {
     if (!currentUser) throw new Error('Usuário não autenticado.');
+    
+    if (selectedTxIds.length > 0) {
+      api.unlockTransactions(selectedTxIds, currentUser).catch(console.error);
+    }
+
     try {
       setIsSubmitting(true);
       const res = await api.startReconciliationSession(driver.id, notes, currentUser);
@@ -137,22 +142,19 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
 
     if (isSelecting) {
       if (!currentUser) return;
-      // Lock otimista: atualiza a UI imediatamente para responsividade.
-      // Se o servidor devolver 409, revertemos e abrimos o modal vermelho.
-      setSelectedTxIds((prev) => (prev.includes(tx.id) ? prev : [...prev, tx.id]));
-      setSelectedTransactionsMap((prevMap) =>
-        prevMap[tx.id] ? prevMap : { ...prevMap, [tx.id]: tx }
-      );
       try {
-        await api.lockTransactions([tx.id], activeSessionId, currentUser);
+        await api.lockTransactions(
+          [tx.id],
+          activeSessionId,
+          currentUser
+        );
+        setSelectedTxIds((prev) => (prev.includes(tx.id) ? prev : [...prev, tx.id]));
+        setSelectedTransactionsMap((prevMap) =>
+          prevMap[tx.id] ? prevMap : { ...prevMap, [tx.id]: tx }
+        );
       } catch (err: any) {
-        // Reverte otimisticamente o estado local.
-        setSelectedTxIds((prev) => prev.filter((id) => id !== tx.id));
-        setSelectedTransactionsMap((prevMap) => {
-          const mapCopy = { ...prevMap };
-          delete mapCopy[tx.id];
-          return mapCopy;
-        });
+        // Operador (ou admin sem force) caiu em 409 → mostra modal vermelho
+        // com nome/descrição/valor do bloqueador. Admin tem botões extras.
         showDetailedBlockFromError(err, tx);
       }
     } else {
