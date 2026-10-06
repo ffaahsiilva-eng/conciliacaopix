@@ -133,6 +133,13 @@ const customFetch = async (url: RequestInfo | URL, init?: RequestInit): Promise<
 
   // Bypass browser cache for GET requests
   let fetchUrl = typeof url === 'string' ? url : url.toString();
+  
+  // Use VITE_API_URL if available and the request is to the API
+  const baseUrl = import.meta.env.VITE_API_URL || '';
+  if (fetchUrl.startsWith('/api') && baseUrl) {
+    fetchUrl = baseUrl + fetchUrl;
+  }
+
   const method = init?.method || 'GET';
   if (method.toUpperCase() === 'GET') {
     const separator = fetchUrl.includes('?') ? '&' : '?';

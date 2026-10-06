@@ -1911,7 +1911,27 @@ app.post('/api/transactions/lock', async (req, res) => {
     }
     
     scheduleSaveDatabase();
-    
+
+    // Capture rich details about the locked transactions so other users can see
+    // exactly which PIX / Cobrança each operator is working on in real time.
+    const detailPlaceholders = transaction_ids.map(() => '?').join(',');
+    const detailStmt = db.prepare(
+      `SELECT id, description, amount, driver_name FROM transactions WHERE id IN (${detailPlaceholders}) AND company_id = ?`
+    );
+    detailStmt.bind([...transaction_ids, companyId]);
+    const details: any[] = [];
+    while (detailStmt.step()) {
+      details.push(detailStmt.getAsObject());
+    }
+    detailStmt.free();
+
+    const descriptions: Record<string, string> = {};
+    const amounts: Record<string, number> = {};
+    for (const d of details) {
+      descriptions[d.id] = d.description;
+      amounts[d.id] = Number(d.amount);
+    }
+
     // Get driver name from the first transaction if available
     const driverName = existing.length > 0 && existing[0].driver_name ? existing[0].driver_name : null;
 
@@ -1919,9 +1939,12 @@ app.post('/api/transactions/lock', async (req, res) => {
       transactionIds: transaction_ids,
       lockedByUserName: actorUser.name,
       lockedByUserId: actorUser.id,
+      lockedAt: nowIso,
       company_id: companyId,
       action: req.body.action,
-      driverName: driverName
+      driverName: driverName,
+      descriptions,
+      amounts
     });
 
     res.json({ success: true, message: 'Transações bloqueadas com sucesso.' });

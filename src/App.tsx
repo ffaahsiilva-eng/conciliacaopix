@@ -22,6 +22,7 @@ import { BankAccount, Driver, Transaction } from './types';
 import { api, formatCurrency, subscribeToRealtimeEvents } from './services/api';
 import { CheckCircle2, Truck, X, Activity } from 'lucide-react';
 import { LoginScreen } from './components/LoginScreen';
+import { LiveConciliationPanel } from './components/LiveConciliationPanel';
 
 function AppContent() {
   const { currentUser, loading: authLoading } = useAuth();
@@ -102,7 +103,9 @@ function AppContent() {
         addToast(`Usuário ${event.payload?.operatorName} salvou uma conciliação do motorista ${event.payload?.driverName}.`, 'success');
       } else if (event.type === 'RECONCILIATION_SESSION_STARTED') {
         const session = event.payload?.session;
-        addToast(`${session?.operator_user_name} está editando um PIX do motorista ${session?.driver_name}.`, 'info');
+        if (session?.operator_user_id !== currentUser?.id) {
+          addToast(`${session?.operator_user_name} abriu uma conciliação para o motorista ${session?.driver_name}.`, 'info');
+        }
       }
     });
 
@@ -330,6 +333,9 @@ function AppContent() {
           </div>
         ))}
       </div>
+
+      {/* Painel persistente de conciliação em tempo real (aviso detalhado) */}
+      <LiveConciliationPanel currentUserId={currentUser?.id} />
     </div>
   );
 }

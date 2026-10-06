@@ -254,7 +254,12 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
       if (type === 'DETAILS') setSelectedTxForDetails(tx);
       if (type === 'EDIT') setTxToEdit(tx);
     } catch (err: any) {
-      showBlockMessage(err.message || 'Comprovante em uso.');
+      // Mostrar modal detalhado informando quem está usando o item
+      const raw = err?.message || '';
+      const match = raw.match(/por\s+([^.\n]+?)\.?\s*$/i);
+      const userName = match ? match[1].trim() : (tx.locked_by_user_name || 'outro usuário');
+      const verb = type === 'DETAILS' ? 'visualizado' : 'editado';
+      showBlockMessage(`Este PIX está sendo ${verb} por ${userName}.`);
     }
   };
 
@@ -955,6 +960,15 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                     <tr
                       key={tx.id}
                       onClick={() => {
+                        if (isTemporarilyLockedByOther) {
+                          // Mostrar modal detalhado informando quem está usando o item
+                          showBlockMessage(
+                            `Este PIX está em uso por ${tx.locked_by_user_name}${
+                              tx.locked_at ? ` desde ${formatDateTime(tx.locked_at)}` : ''
+                            }. Você não pode marcá-lo até ser desbloqueado.`
+                          );
+                          return;
+                        }
                         if (isSessionActive && !isBlockedFromSelection) {
                           toggleTransaction(tx);
                         } else if (isDebit) {
@@ -1211,6 +1225,29 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                               <RotateCcw className="w-3 h-3 text-amber-600" />
                               <span>Saída Pendente de Vínculo</span>
                             </span>
+                          </div>
+                        ) : isTemporarilyLockedByOther ? (
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="inline-flex items-center space-x-1 bg-red-100 text-red-800 border border-red-300 px-2 py-0.5 rounded-md text-[11px] font-bold">
+                                <Lock className="w-3 h-3 text-red-700" />
+                                <span>Bloqueado em tempo real</span>
+                              </span>
+                            </div>
+                            <div className="bg-red-50 border border-red-200 rounded-md px-2 py-1 text-[10px] leading-tight">
+                              <p className="text-red-700 font-bold flex items-center gap-1">
+                                <User className="w-3 h-3" />
+                                <span>Por: {tx.locked_by_user_name}</span>
+                              </p>
+                              {tx.locked_at ? (
+                                <p className="text-red-600 mt-0.5">
+                                  desde {formatDateTime(tx.locked_at)}
+                                </p>
+                              ) : null}
+                              <p className="text-slate-600 mt-0.5">
+                                Você não pode marcar este PIX até ser desbloqueado.
+                              </p>
+                            </div>
                           </div>
                         ) : (
                           <span className="inline-flex items-center space-x-1 bg-amber-50 text-amber-900 border border-amber-300 px-2 py-0.5 rounded-md text-[11px] font-semibold">

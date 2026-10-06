@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Driver, Transaction } from '../types';
 import { api } from '../services/api';
 import { useAuth } from './AuthContext';
+import { BlockDetailedModal } from '../components/LiveConciliationPanel';
 
 interface ReconciliationSessionContextType {
   activeDriver: Driver | null;
@@ -32,6 +33,12 @@ interface ReconciliationSessionContextType {
   cancelSession: () => void;
   isSubmitting: boolean;
   showBlockMessage: (msg: string) => void;
+  showDetailedBlock: (info: {
+    blockedByUserName: string;
+    description?: string;
+    amount?: number;
+    lockedAt?: string;
+  }) => void;
 }
 
 const ReconciliationSessionContext = createContext<ReconciliationSessionContextType | undefined>(undefined);
@@ -48,6 +55,12 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
   const [missingAmount, setMissingAmount] = useState<number>(0);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [blockingMessage, setBlockingMessage] = useState<string | null>(null);
+  const [detailedBlock, setDetailedBlock] = useState<{
+    blockedByUserName: string;
+    description?: string;
+    amount?: number;
+    lockedAt?: string;
+  } | null>(null);
 
   const startSession = async (driver: Driver, notes?: string) => {
     if (!currentUser) throw new Error('Usuário não autenticado.');
@@ -102,7 +115,18 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
         setSelectedTxIds((prev) => [...prev, tx.id]);
         setSelectedTransactionsMap((prevMap) => ({ ...prevMap, [tx.id]: tx }));
       } catch (err: any) {
-        showBlockMessage(err.message || 'Não foi possível bloquear a transação.');
+        // Detalhar bloqueio quando o servidor informa quem está usando o item
+        const detail = extractBlockDetail(err, tx);
+        if (detail) {
+          showDetailedBlock({
+            blockedByUserName: detail.userName,
+            description: tx.description,
+            amount: tx.amount,
+            lockedAt: detail.lockedAt
+          });
+        } else {
+          showBlockMessage(err.message || 'Não foi possível bloquear a transação.');
+        }
       }
     } else {
       if (currentUser) {
@@ -124,13 +148,13 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
       (t) => t.status === 'PENDING' && t.is_pix_return !== 1 && t.is_pix_return !== true && !selectedTxIds.includes(t.id)
     );
     if (allowed.length === 0) return;
-    
+
     if (!currentUser) return;
     const newIds = allowed.map((t) => t.id);
 
     try {
       await api.lockTransactions(newIds, activeSessionId, currentUser);
-      
+
       const newMap: Record<string, Transaction> = {};
       allowed.forEach((t) => {
         newMap[t.id] = t;
@@ -142,8 +166,49 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
       });
       setSelectedTransactionsMap((prev) => ({ ...prev, ...newMap }));
     } catch (err: any) {
-      showBlockMessage(err.message || 'Erro ao tentar bloquear as transações.');
+      // Tentar extrair o nome do usuário que bloqueou do próprio payload do erro
+      const detail = extractBlockDetail(err, allowed[0]);
+      if (detail) {
+        showDetailedBlock({
+          blockedByUserName: detail.userName,
+          description: allowed[0].description,
+          amount: allowed[0].amount,
+          lockedAt: detail.lockedAt
+        });
+      } else {
+        showBlockMessage(err.message || 'Erro ao tentar bloquear as transações.');
+      }
     }
+  };
+
+  /**
+   * Extrai o nome do usuário bloqueador a partir da mensagem de erro
+   * retornada pelo servidor (que inclui o nome do operador).
+   */
+  const extractBlockDetail = (
+    err: any,
+    tx: Transaction
+  ): { userName: string; lockedAt?: string } | null => {
+    const raw =
+      err?.message ||
+      err?.error ||
+      (typeof err === 'string' ? err : '');
+    if (!raw || typeof raw !== 'string') return null;
+    // Padrão PT-BR: "já está sendo concilada por <NOME>."
+    const match = raw.match(/por\s+([^.\n]+?)\.?\s*$/i);
+    if (!match) return null;
+    const name = match[1].trim();
+    if (!name) return null;
+    return { userName: name, lockedAt: tx.locked_at };
+  };
+
+  const showDetailedBlock = (info: {
+    blockedByUserName: string;
+    description?: string;
+    amount?: number;
+    lockedAt?: string;
+  }) => {
+    setDetailedBlock(info);
   };
 
   const clearSelection = () => {
@@ -235,7 +300,8 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
         finishSession,
         cancelSession,
         isSubmitting,
-        showBlockMessage
+        showBlockMessage,
+        showDetailedBlock
       }}
     >
       {children}
@@ -259,6 +325,14 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
           </div>
         </div>
       )}
+      <BlockDetailedModal
+        open={!!detailedBlock}
+        onClose={() => setDetailedBlock(null)}
+        blockedByUserName={detailedBlock?.blockedByUserName || ''}
+        description={detailedBlock?.description}
+        amount={detailedBlock?.amount}
+        lockedAt={detailedBlock?.lockedAt}
+      />
     </ReconciliationSessionContext.Provider>
   );
 };
