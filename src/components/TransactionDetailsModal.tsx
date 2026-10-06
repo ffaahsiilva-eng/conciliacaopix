@@ -54,12 +54,8 @@ export const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = (
     try {
       setUnlinking(true);
       await api.unlinkPixReturn(transaction.id, currentUser || undefined);
-      setActionMsg('Estorno desvinculado com sucesso! Lançamento desbloqueado.');
-      setTimeout(() => {
-        setActionMsg(null);
-        if (onUpdated) onUpdated();
-        onClose();
-      }, 1500);
+      if (onUpdated) onUpdated();
+      onClose();
     } catch (err: any) {
       alert(err.message || 'Erro ao desvincular estorno.');
     } finally {

@@ -95,14 +95,14 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
 
   const [searchInput, setSearchInput] = useState(filters.search);
 
-  // Debounce effect for search
+  // Instant debounce effect for search (150ms for snappy responsiveness)
   useEffect(() => {
     const handler = setTimeout(() => {
       setFilters((prev) => {
         if (prev.search === searchInput) return prev;
         return { ...prev, search: searchInput, page: 1 };
       });
-    }, 600);
+    }, 150);
     return () => clearTimeout(handler);
   }, [searchInput]);
 
@@ -159,13 +159,6 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
     fetchTransactions();
   }, [filters, currentCompany?.id]);
 
-  // Auto-refresh background poll every 10 seconds
-  useEffect(() => {
-    const interval = setInterval(() => {
-      fetchTransactions(true);
-    }, 10000);
-    return () => clearInterval(interval);
-  }, [filters, currentCompany?.id]);
 
   useEffect(() => {
     const unsubscribe = subscribeToRealtimeEvents((event) => {
@@ -177,6 +170,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
         event.type === 'TRANSACTION_DELETED' ||
         event.type === 'TRANSACTION_UPDATED' ||
         event.type === 'DATABASE_CLEANED' ||
+        event.type === 'DATABASE_RESTORED' ||
         event.type === 'TRANSACTIONS_LOCKED' ||
         event.type === 'TRANSACTIONS_UNLOCKED'
       ) {
@@ -184,29 +178,74 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
           setLiveNotification(
             `Sincronizado: ${event.payload?.itemCount} transações conciliadas por ${event.payload?.operatorName} para o motorista ${event.payload?.driverName}!`
           );
+          setTimeout(() => setLiveNotification(null), 5000);
+          fetchTransactions();
         } else if (event.type === 'STATEMENT_IMPORTED') {
           setLiveNotification(
             `Novo extrato importado: ${event.payload?.importedCount} transações adicionadas (${event.payload?.bankName}).`
           );
-        } else if (event.type === 'STATEMENT_DELETED') {
-          setLiveNotification(`Extrato excluído com sucesso.`);
-        } else if (event.type === 'TRANSACTION_DELETED') {
-          setLiveNotification(`Lançamento excluído com sucesso.`);
+          setTimeout(() => setLiveNotification(null), 5000);
+          fetchTransactions();
+        } else if (event.type === 'STATEMENT_DELETED' || event.type === 'TRANSACTION_DELETED' || event.type === 'DATABASE_CLEANED' || event.type === 'DATABASE_RESTORED') {
+          if (event.type === 'STATEMENT_DELETED') setLiveNotification(`Extrato excluído com sucesso.`);
+          else if (event.type === 'TRANSACTION_DELETED') setLiveNotification(`Lançamento excluído com sucesso.`);
+          else if (event.type === 'DATABASE_CLEANED') setLiveNotification(`Banco de dados limpo com sucesso.`);
+          else if (event.type === 'DATABASE_RESTORED') setLiveNotification(`Banco de dados restaurado com sucesso.`);
+          setTimeout(() => setLiveNotification(null), 5000);
+          fetchTransactions();
+        } else if (event.type === 'TRANSACTION_REOPENED') {
+          fetchTransactions();
         } else if (event.type === 'TRANSACTION_UPDATED') {
-          setLiveNotification(`Transação atualizada em tempo real.`);
-        } else if (event.type === 'DATABASE_CLEANED') {
-          setLiveNotification(`Banco de dados limpo com sucesso.`);
-        } else if (event.type === 'TRANSACTIONS_LOCKED' && event.payload?.lockedByUserId !== currentUser?.id) {
-          setLiveNotification(`Algumas transações foram bloqueadas por ${event.payload?.lockedByUserName}.`);
+          // Patch the specific transaction in local state to avoid full refetch
+          const { transactionId, ...updates } = event.payload || {};
+          if (transactionId) {
+            setTransactions(prev =>
+              prev.map(t => t.id === transactionId ? { ...t, ...updates } : t)
+            );
+          } else {
+            fetchTransactions();
+          }
+        } else if (event.type === 'TRANSACTIONS_LOCKED') {
+          // Update lock state locally - avoid full refetch for frequent lock events
+          const { transactionIds, lockedByUserId, lockedByUserName } = event.payload || {};
+          if (transactionIds?.length) {
+            const idSet = new Set(transactionIds);
+            setTransactions(prev =>
+              prev.map(t => idSet.has(t.id) ? {
+                ...t,
+                locked_by_user_id: lockedByUserId,
+                locked_by_user_name: lockedByUserName,
+                locked_at: new Date().toISOString()
+              } : t)
+            );
+            // Show notification only when locked by another user
+            if (lockedByUserId !== currentUser?.id) {
+              setLiveNotification(`Algumas transações foram bloqueadas por ${lockedByUserName}.`);
+              setTimeout(() => setLiveNotification(null), 5000);
+            }
+          }
+        } else if (event.type === 'TRANSACTIONS_UNLOCKED') {
+          // Update unlock state locally - avoid full refetch for frequent unlock events
+          const { transactionIds } = event.payload || {};
+          if (transactionIds?.length) {
+            const idSet = new Set(transactionIds);
+            setTransactions(prev =>
+              prev.map(t => idSet.has(t.id) ? {
+                ...t,
+                locked_by_user_id: undefined,
+                locked_by_user_name: undefined,
+                locked_at: undefined,
+                locked_by_session_id: undefined
+              } : t)
+            );
+          }
         }
 
-        setTimeout(() => setLiveNotification(null), 5000);
-        fetchTransactions();
       }
     });
 
     return () => unsubscribe();
-  }, [filters]);
+  }, [filters, currentUser?.id]);
 
   const handleOpenTransactionView = async (tx: Transaction, type: 'DETAILS' | 'EDIT') => {
     if (!currentUser) return;

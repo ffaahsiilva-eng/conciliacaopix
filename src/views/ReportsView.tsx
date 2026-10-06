@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { api, formatCurrency, formatDate, formatDateTime, formatPlate } from '../services/api';
+import { api, formatCurrency, formatDate, formatDateTime, formatPlate, subscribeToRealtimeEvents } from '../services/api';
 import { LicensePlateBadge } from '../components/LicensePlateBadge';
 import { AuditLog, Driver, ReconciliationSession } from '../types';
 import { useCompany } from '../context/CompanyContext';

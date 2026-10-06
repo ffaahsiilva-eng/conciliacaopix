@@ -38,14 +38,10 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen
       setLoading(true);
       setErrorMsg(null);
       await changePassword(currentUser.id, currentPassword, newPassword);
-      setSuccessMsg('Sua senha foi alterada com sucesso!');
-      setTimeout(() => {
-        setSuccessMsg(null);
-        setCurrentPassword('');
-        setNewPassword('');
-        setConfirmPassword('');
-        onClose();
-      }, 2000);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      onClose();
     } catch (err: any) {
       setErrorMsg(err.message || 'Erro ao alterar senha.');
     } finally {
