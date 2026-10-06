@@ -578,6 +578,30 @@ app.post('/api/auth/change-password', async (req, res) => {
 app.get('/api/drivers', async (req, res) => {
   try {
     const companyId = getCompanyId(req);
+    
+    // Auto-cleanup stuck IN_PROGRESS sessions (older than 2 hours)
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const staleSessions = await queryAll(
+      `SELECT id FROM reconciliation_sessions WHERE status = 'IN_PROGRESS' AND started_at < ? AND company_id = ?`, 
+      [twoHoursAgo, companyId]
+    );
+    
+    if (staleSessions.length > 0) {
+      const db = await getDatabase();
+      db.run(
+        `DELETE FROM reconciliation_sessions WHERE status = 'IN_PROGRESS' AND started_at < ? AND company_id = ?`, 
+        [twoHoursAgo, companyId]
+      );
+      
+      // Also release any locks held by these sessions
+      db.run(
+        `UPDATE transactions SET locked_at = NULL, locked_by_user_id = NULL, locked_by_user_name = NULL, locked_by_session_id = NULL WHERE locked_by_user_id IS NOT NULL AND locked_at < ? AND status = 'PENDING' AND company_id = ?`,
+        [twoHoursAgo, companyId]
+      );
+      
+      await persistDatabase();
+      console.log(`[CLEANUP] Deleted ${staleSessions.length} stuck sessions and released locks for company ${companyId}`);
+    }
     const drivers = await queryAll(
       `
       SELECT d.*,
