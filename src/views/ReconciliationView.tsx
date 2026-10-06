@@ -121,6 +121,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
 
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [liveNotification, setLiveNotification] = useState<string | null>(null);
+  const [alertLevel, setAlertLevel] = useState<'info' | 'warning' | 'danger'>('info');
   const [isManualRefreshing, setIsManualRefreshing] = useState(false);
 
   // Modals for transaction deletion, ignore, mark return or edit
@@ -179,12 +180,14 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
           setLiveNotification(
             `Sincronizado: ${event.payload?.itemCount} transações conciliadas por ${event.payload?.operatorName} para o motorista ${event.payload?.driverName}!`
           );
+          setAlertLevel('info');
           setTimeout(() => setLiveNotification(null), 5000);
           fetchTransactions();
         } else if (event.type === 'STATEMENT_IMPORTED') {
           setLiveNotification(
             `Novo extrato importado: ${event.payload?.importedCount} transações adicionadas (${event.payload?.bankName}).`
           );
+          setAlertLevel('info');
           setTimeout(() => setLiveNotification(null), 5000);
           fetchTransactions();
         } else if (event.type === 'STATEMENT_DELETED' || event.type === 'TRANSACTION_DELETED' || event.type === 'DATABASE_CLEANED' || event.type === 'DATABASE_RESTORED') {
@@ -192,6 +195,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
           else if (event.type === 'TRANSACTION_DELETED') setLiveNotification(`Lançamento excluído com sucesso.`);
           else if (event.type === 'DATABASE_CLEANED') setLiveNotification(`Banco de dados limpo com sucesso.`);
           else if (event.type === 'DATABASE_RESTORED') setLiveNotification(`Banco de dados restaurado com sucesso.`);
+          setAlertLevel('info');
           setTimeout(() => setLiveNotification(null), 5000);
           fetchTransactions();
         } else if (event.type === 'TRANSACTION_REOPENED') {
@@ -208,7 +212,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
           }
         } else if (event.type === 'TRANSACTIONS_LOCKED') {
           // Update lock state locally - avoid full refetch for frequent lock events
-          const { transactionIds, lockedByUserId, lockedByUserName } = event.payload || {};
+          const { transactionIds, lockedByUserId, lockedByUserName, descriptions, amounts } = event.payload || {};
           if (transactionIds?.length) {
             const idSet = new Set(transactionIds);
             setTransactions(prev =>
@@ -219,10 +223,20 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                 locked_at: new Date().toISOString()
               } : t)
             );
-            // Show notification only when locked by another user
+            // Show LARGE red alert when locked by another user (popup em tempo real)
             if (lockedByUserId !== currentUser?.id) {
-              setLiveNotification(`Algumas transações foram bloqueadas por ${lockedByUserName}.`);
-              setTimeout(() => setLiveNotification(null), 5000);
+              const firstDesc = descriptions && Object.values(descriptions)[0] as string | undefined;
+              const firstAmount = amounts && (Object.values(amounts)[0] as number | undefined);
+              const more = transactionIds.length > 1 ? ` (+${transactionIds.length - 1} outros)` : '';
+              const verb = (event.payload?.action === 'DETAILS')
+                ? 'visualizando'
+                : (event.payload?.action === 'EDIT')
+                ? 'editando'
+                : 'conciliando';
+              setLiveNotification(
+                `🚨 ${lockedByUserName} está ${verb} ${firstDesc ? `"${(firstDesc || '').substring(0, 40)}${(firstDesc || '').length > 40 ? '…' : ''}"` : `${transactionIds.length} PIX/Cobrança(s)`}${firstAmount ? ` (R$ ${Number(firstAmount).toFixed(2)})` : ''}${more}`
+              );
+              setAlertLevel('danger');
             }
           }
         } else if (event.type === 'TRANSACTIONS_UNLOCKED') {
@@ -367,21 +381,54 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
     <div className="fluent-content-scroll">
       {/* Real-time sync notification banner */}
       {liveNotification && (
-        <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3 px-4 shadow-xs text-xs text-emerald-900 flex items-center justify-between animate-fade-in" style={{marginBottom: '16px'}}>
-          <div className="flex items-center space-x-2">
-            <span className="flex h-2 w-2 relative">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-600"></span>
-            </span>
-            <span className="font-bold">{liveNotification}</span>
-          </div>
-          <button
-            onClick={() => setLiveNotification(null)}
-            className="text-emerald-700 hover:text-emerald-900 font-bold ml-4 cursor-pointer"
+        alertLevel === 'danger' ? (
+          <div
+            className="rounded-2xl p-4 px-5 shadow-lg text-sm flex items-center justify-between animate-fade-in border-2 border-red-600"
+            style={{
+              marginBottom: '16px',
+              background: 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)',
+              color: 'white',
+              animation: 'fadeInUp 0.3s ease-out, pulse 2s ease-in-out infinite'
+            }}
           >
-            ✕
-          </button>
-        </div>
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-white animate-pulse" />
+              </div>
+              <div>
+                <p className="text-[10px] uppercase font-extrabold tracking-widest text-red-100">
+                  Alerta em tempo real · conflito de conciliação
+                </p>
+                <p className="font-bold text-white text-sm leading-tight mt-0.5">
+                  {liveNotification}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setLiveNotification(null)}
+              className="text-white/80 hover:text-white font-bold ml-4 cursor-pointer p-1.5 rounded-lg hover:bg-white/10"
+              title="Fechar aviso"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        ) : (
+          <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3 px-4 shadow-xs text-xs text-emerald-900 flex items-center justify-between animate-fade-in" style={{marginBottom: '16px'}}>
+            <div className="flex items-center space-x-2">
+              <span className="flex h-2 w-2 relative">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-600"></span>
+              </span>
+              <span className="font-bold">{liveNotification}</span>
+            </div>
+            <button
+              onClick={() => setLiveNotification(null)}
+              className="text-emerald-700 hover:text-emerald-900 font-bold ml-4 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )
       )}
 
       {/* Top Metric Cards */}

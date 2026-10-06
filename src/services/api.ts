@@ -592,7 +592,19 @@ export const api = {
       body: JSON.stringify({ driver_id: driverId, notes, actorUser, company_id: companyId || globalCompanyId })
     });
     const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Falha ao iniciar sessão de conciliação');
+    if (!res.ok) {
+      // Anexa o payload estruturado do 409 (motorista em uso por outro operador)
+      // para que a UI possa abrir o modal vermelho sem precisar re-parsear a mensagem.
+      const err: any = new Error(json.error || 'Falha ao iniciar sessão de conciliação');
+      err.code = res.status;
+      err.lockedByUserName = json.blockedByUserName;
+      err.lockedByUserId = json.blockedByUserId;
+      err.driverId = json.driverId;
+      err.driverName = json.driverName;
+      err.sessionId = json.sessionId;
+      err.startedAt = json.startedAt;
+      throw err;
+    }
     return json;
   },
 

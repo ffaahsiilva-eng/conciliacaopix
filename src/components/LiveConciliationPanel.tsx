@@ -286,6 +286,18 @@ interface BlockDetailedModalProps {
   description?: string;
   amount?: number;
   lockedAt?: string;
+  /**
+   * Qual entidade está bloqueada. Quando 'driver', o modal mostra o nome do
+   * motorista em vez de descrição/valor da transação e omite os botões admin
+   * de takeover (que só fazem sentido para transações).
+   */
+  entityKind?: 'transaction' | 'driver';
+  /**
+   * Nome da entidade bloqueada (usado quando entityKind='driver'). Quando
+   * entityKind='transaction' e este campo for fornecido, sobrescreve o
+   * cabeçalho do modal ("Movimentação XYZ" vs "Item").
+   */
+  entityLabel?: string;
   /** Admin-only: dispara desbloqueio forçado. */
   onAdminForceUnlock?: () => Promise<void> | void;
   /** Admin-only: desbloqueia e já bloqueia para si mesmo em seguida. */
@@ -303,6 +315,8 @@ export const BlockDetailedModal: React.FC<BlockDetailedModalProps> = ({
   description,
   amount,
   lockedAt,
+  entityKind = 'transaction',
+  entityLabel,
   onAdminForceUnlock,
   onAdminForceTakeOver,
   isAdmin,
@@ -327,19 +341,23 @@ export const BlockDetailedModal: React.FC<BlockDetailedModalProps> = ({
       ? `${Math.floor(elapsed / 60)} minuto${Math.floor(elapsed / 60) !== 1 ? 's' : ''}`
       : `${Math.floor(elapsed / 3600)}h ${Math.floor((elapsed % 3600) / 60)}min`;
 
+  const isDriver = entityKind === 'driver';
+  const headerSubtitle = isDriver
+    ? 'Outra pessoa está conciliando este motorista agora.'
+    : 'Outra pessoa está usando este PIX / Cobrança agora.';
+  const itemLabel = entityLabel || (isDriver ? 'Motorista' : 'Item');
+
   return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-fade-in-up">
+    <div className="fixed inset-0 bg-red-900/40 backdrop-blur-sm z-[250] flex items-center justify-center p-4 animate-pulse-slow">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-fade-in-up border-4 border-red-500">
         <div className="bg-gradient-to-br from-red-600 to-orange-700 px-6 py-5 text-white">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center">
+            <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center animate-pulse">
               <Lock className="w-6 h-6" />
             </div>
             <div>
-              <h3 className="font-bold text-lg">Item Indisponível</h3>
-              <p className="text-sm text-red-100">
-                Outra pessoa está usando este PIX / Cobrança agora.
-              </p>
+              <h3 className="font-bold text-lg">⚠️ {isDriver ? 'Motorista Indisponível' : 'Item Indisponível'}</h3>
+              <p className="text-sm text-red-100">{headerSubtitle}</p>
             </div>
           </div>
         </div>
@@ -347,7 +365,7 @@ export const BlockDetailedModal: React.FC<BlockDetailedModalProps> = ({
         <div className="p-6 space-y-4">
           <div className="bg-red-50 border-2 border-red-200 rounded-xl p-4">
             <p className="text-xs font-bold text-red-700 uppercase tracking-wider mb-1">
-              Bloqueado por
+              {isDriver ? 'Em conciliação por' : 'Bloqueado por'}
             </p>
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-red-600 text-white rounded-full flex items-center justify-center font-bold">
@@ -355,15 +373,26 @@ export const BlockDetailedModal: React.FC<BlockDetailedModalProps> = ({
               </div>
               <div>
                 <p className="text-lg font-bold text-slate-800">{blockedByUserName}</p>
-                <p className="text-xs text-slate-500">Usuário ativo nesta empresa</p>
+                <p className="text-xs text-slate-500">
+                  {isDriver ? 'Operador com sessão ativa' : 'Usuário ativo nesta empresa'}
+                </p>
               </div>
             </div>
           </div>
 
-          {description ? (
+          {isDriver ? (
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
               <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
-                Item
+                {itemLabel}
+              </p>
+              <p className="text-sm text-slate-800 font-medium">
+                {description || 'Motorista'}
+              </p>
+            </div>
+          ) : description ? (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+              <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+                {itemLabel}
               </p>
               <p className="text-sm text-slate-800 font-medium">{description}</p>
               {typeof amount === 'number' ? (
@@ -377,8 +406,10 @@ export const BlockDetailedModal: React.FC<BlockDetailedModalProps> = ({
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center gap-2 text-amber-800">
             <Clock className="w-4 h-4 shrink-0" />
             <p className="text-xs">
-              Bloqueado há <strong>{elapsedStr}</strong>. O item será liberado
-              automaticamente quando o usuário desmarcar ou finalizar a conciliação.
+              {isDriver
+                ? <>Em conciliação há <strong>{elapsedStr}</strong>. Você precisa aguardar o operador finalizar ou cancelar antes de iniciar uma nova conciliação para este motorista.</>
+                : <>Bloqueado há <strong>{elapsedStr}</strong>. O item será liberado
+              automaticamente quando o usuário desmarcar ou finalizar a conciliação.</>}
             </p>
           </div>
 
@@ -386,15 +417,24 @@ export const BlockDetailedModal: React.FC<BlockDetailedModalProps> = ({
             <p className="font-bold text-slate-700 mb-1">
               Por que esse bloqueio existe?
             </p>
-            <p>
-              Cada PIX ou Cobrança só pode estar em uso por <strong>um usuário por
-              vez</strong>. Enquanto {blockedByUserName} estiver com este item
-              selecionado ou editando, ninguém mais pode conciliá-lo para evitar
-              conflitos e duplicidade de comprovantes.
-            </p>
+            {isDriver ? (
+              <p>
+                Cada motorista só pode estar em conciliação por <strong>um usuário por vez</strong>.
+                Enquanto {blockedByUserName} estiver com a sessão ativa, ninguém mais pode iniciar
+                outra conciliação para {description || 'este motorista'} para evitar duplicidade
+                de comprovantes.
+              </p>
+            ) : (
+              <p>
+                Cada PIX ou Cobrança só pode estar em uso por <strong>um usuário por
+                vez</strong>. Enquanto {blockedByUserName} estiver com este item
+                selecionado ou editando, ninguém mais pode conciliá-lo para evitar
+                conflitos e duplicidade de comprovantes.
+              </p>
+            )}
           </div>
 
-          {isAdmin && (onAdminForceUnlock || onAdminForceTakeOver) ? (
+          {isAdmin && !isDriver && (onAdminForceUnlock || onAdminForceTakeOver) ? (
             <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-3">
               <div className="flex items-center gap-2 mb-2">
                 <ShieldCheck className="w-4 h-4 text-amber-700" />
@@ -441,7 +481,7 @@ export const BlockDetailedModal: React.FC<BlockDetailedModalProps> = ({
             onClick={onClose}
             className="w-full py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl transition-colors cursor-pointer"
           >
-            Entendi, vou aguardar
+            {isDriver ? 'Entendi, vou escolher outro motorista' : 'Entendi, vou aguardar'}
           </button>
         </div>
       </div>

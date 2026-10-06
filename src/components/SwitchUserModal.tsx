@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { User } from '../types';
+import { api } from '../services/api';
 import { Lock, Eye, EyeOff, AlertCircle, X, ShieldCheck, ArrowRight, UserCheck } from 'lucide-react';
 
 interface SwitchUserModalProps {
@@ -41,6 +41,17 @@ export const SwitchUserModal: React.FC<SwitchUserModalProps> = ({ isOpen, onClos
     try {
       setLoading(true);
       setErrorMsg(null);
+      // Libera todos os locks do usuário atual ANTES de autenticar como outro.
+      // Sem isso, locks do usuário anterior vazam até fechar a aba.
+      if (currentUser) {
+        try {
+          await api.unlockAllByUser(currentUser);
+        } catch (unlockErr) {
+          // Não bloquear troca de usuário se o unlock falhar — o servidor
+          // tem cleanupOrphanLocks que vai pegar depois.
+          console.warn('[SwitchUserModal] unlockAllByUser falhou (não crítico):', unlockErr);
+        }
+      }
       await login(selectedTargetId, password);
       onClose();
     } catch (err: any) {

@@ -584,17 +584,42 @@ app.get('/api/drivers', async (req, res) => {
              COUNT(DISTINCT s.id) as total_sessions,
              COUNT(DISTINCT CASE WHEN t.status = 'RECONCILED' THEN t.id END) as total_reconciled_pix_count,
              COALESCE(SUM(CASE WHEN t.status = 'RECONCILED' THEN t.amount ELSE 0 END), 0) as total_reconciled_amount,
-             COALESCE(SUM(s.missing_amount), 0) as total_missing_amount
+             COALESCE(SUM(s.missing_amount), 0) as total_missing_amount,
+             active.session_id AS active_session_id,
+             active.operator_user_id AS active_operator_user_id,
+             active.operator_user_name AS active_operator_user_name,
+             active.started_at AS active_session_started_at
       FROM drivers d
       LEFT JOIN reconciliation_sessions s ON s.driver_id = d.id AND s.status = 'COMPLETED'
       LEFT JOIN transactions t ON t.driver_id = d.id AND t.status = 'RECONCILED'
+      LEFT JOIN (
+        SELECT driver_id, company_id, id AS session_id, operator_user_id, operator_user_name, started_at
+        FROM reconciliation_sessions
+        WHERE status = 'IN_PROGRESS'
+      ) active ON active.driver_id = d.id AND active.company_id = d.company_id
       WHERE d.company_id = ?
       GROUP BY d.id
       ORDER BY d.name ASC
     `,
       [companyId]
     );
-    res.json(drivers);
+
+    // Normaliza `active_session` em um único objeto (ou null) para a UI.
+    const enriched = drivers.map((d: any) => {
+      const { active_session_id, active_operator_user_id, active_operator_user_name, active_session_started_at, ...rest } = d;
+      const active_session =
+        active_session_id && active_operator_user_id
+          ? {
+              session_id: active_session_id,
+              operator_user_id: active_operator_user_id,
+              operator_user_name: active_operator_user_name,
+              started_at: active_session_started_at
+            }
+          : null;
+      return { ...rest, active_session };
+    });
+
+    res.json(enriched);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2084,7 +2109,14 @@ app.post('/api/transactions/unlock-all-by-user', async (req, res) => {
   }
 });
 
-// Start or check active driver reconciliation session
+// Start or check active driver reconciliation session.
+// Regras de negócio:
+//   • Só pode existir UMA sessão IN_PROGRESS por `driver_id` por empresa.
+//   • Se já existir sessão do PRÓPRIO usuário para o motorista, é reentrada idempotente
+//     (devolve a sessão existente em 200) — cobre o caso de refresh / reabriu a aba.
+//   • Se já existir sessão de OUTRO usuário, devolve 409 estruturado para o front
+//     abrir o modal vermelho.
+//   • Sem takeover de sessão nesta iteração.
 app.post('/api/reconciliation/start-session', async (req, res) => {
   try {
     const { driver_id, notes, actorUser } = req.body;
@@ -2102,36 +2134,91 @@ app.post('/api/reconciliation/start-session', async (req, res) => {
       return res.status(404).json({ error: 'Motorista não encontrado no cadastro desta empresa.' });
     }
 
+    const db = await getDatabase();
     const sessionId = `sess-${Date.now()}`;
     const nowIso = new Date().toISOString();
 
-    await runSql(
-      `INSERT INTO reconciliation_sessions (
-        id, company_id, driver_id, driver_name, driver_plate, operator_user_id, operator_user_name,
-        status, started_at, total_items, total_amount, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'IN_PROGRESS', ?, 0, 0, ?)`,
-      [
-        sessionId,
-        companyId,
-        driver.id,
-        driver.name,
-        driver.vehicle_plate,
-        actorUser.id,
-        actorUser.name,
-        nowIso,
-        notes || null
-      ]
-    );
+    // Atomicidade: BEGIN IMMEDIATE → checa conflito → insere ou reusa → COMMIT.
+    // Garante que dois operadores clicando simultaneamente no mesmo motorista
+    // não consigam ambos abrir sessão (race condition entre SELECT e INSERT).
+    db.run('BEGIN IMMEDIATE');
+    let txRolledBack = false;
+    const rollback = () => { if (!txRolledBack) { try { db.run('ROLLBACK'); } catch (_) {} txRolledBack = true; } };
+    let isReentrada = false;
+    let existingSessionId: string | null = null;
+    try {
+      const existing = await queryOne(
+        `SELECT id, operator_user_id, operator_user_name, started_at
+         FROM reconciliation_sessions
+         WHERE driver_id = ? AND company_id = ? AND status = 'IN_PROGRESS'
+         LIMIT 1`,
+        [driver_id, companyId]
+      );
 
-    await logAudit('SESSION_STARTED', 'SESSION', sessionId, actorUser, {
-      driver: driver.name,
-      plate: driver.vehicle_plate
-    }, companyId);
+      if (existing) {
+        if (existing.operator_user_id === actorUser.id) {
+          // Reentrada do mesmo operador — devolve 200 com a sessão existente
+          // para que a UI possa recuperar o estado sem criar duplicata.
+          isReentrada = true;
+          existingSessionId = existing.id;
+        } else {
+          rollback();
+          return res.status(409).json({
+            error: `Já existe uma conciliação em andamento para o motorista ${driver.name} por ${formatName(existing.operator_user_name)}.`,
+            blockedByUserName: formatName(existing.operator_user_name),
+            blockedByUserId: existing.operator_user_id,
+            driverId: driver.id,
+            driverName: driver.name,
+            sessionId: existing.id,
+            startedAt: existing.started_at
+          });
+        }
+      }
 
-    const session = await queryOne(`SELECT * FROM reconciliation_sessions WHERE id = ?`, [sessionId]);
+      if (!isReentrada) {
+        db.run(
+          `INSERT INTO reconciliation_sessions (
+            id, company_id, driver_id, driver_name, driver_plate, operator_user_id, operator_user_name,
+            status, started_at, total_items, total_amount, notes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'IN_PROGRESS', ?, 0, 0, ?)`,
+          [
+            sessionId,
+            companyId,
+            driver.id,
+            driver.name,
+            driver.vehicle_plate,
+            actorUser.id,
+            actorUser.name,
+            nowIso,
+            notes || null
+          ]
+        );
+        existingSessionId = sessionId;
+      }
 
-    broadcastEvent('RECONCILIATION_SESSION_STARTED', { session, company_id: companyId });
-    res.status(201).json(session);
+      db.run('COMMIT');
+      txRolledBack = true;
+    } catch (innerErr) {
+      rollback();
+      throw innerErr;
+    }
+
+    const session = await queryOne(`SELECT * FROM reconciliation_sessions WHERE id = ?`, [existingSessionId]);
+
+    if (!isReentrada) {
+      await logAudit('SESSION_STARTED', 'SESSION', sessionId, actorUser, {
+        driver: driver.name,
+        plate: driver.vehicle_plate
+      }, companyId);
+
+      // Broadcast SÓ depois do COMMIT — evita que clientes vejam a sessão
+      // antes dela existir de fato no banco.
+      broadcastEvent('RECONCILIATION_SESSION_STARTED', { session, company_id: companyId });
+      res.status(201).json(session);
+    } else {
+      // Reentrada: não cria nova sessão, não gera auditoria, não faz broadcast.
+      res.status(200).json(session);
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

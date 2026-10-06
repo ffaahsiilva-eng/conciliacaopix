@@ -15,9 +15,9 @@ interface ReconciliationSessionContextType {
   isSessionActive: boolean;
   selectedTransactions: Transaction[];
   totalSelectedAmount: number;
-  startSession: (driver: Driver, notes?: string) => Promise<void>;
-  toggleTransaction: (tx: Transaction) => void;
-  selectMultiple: (txs: Transaction[]) => void;
+  startSession: (driver: Driver, notes?: string) => Promise<boolean>;
+  toggleTransaction: (tx: Transaction) => Promise<void>;
+  selectMultiple: (txs: Transaction[]) => Promise<void>;
   clearSelection: () => void;
   setVoucherForTx: (txId: string, voucher: string) => void;
   setGeneralVoucher: (val: string) => void;
@@ -39,6 +39,8 @@ interface ReconciliationSessionContextType {
     amount?: number;
     lockedAt?: string;
     transactionId?: string;
+    entityKind?: 'transaction' | 'driver';
+    entityLabel?: string;
   }) => void;
   adminUnlockLoading: boolean;
   handleAdminForceUnlock: () => Promise<void>;
@@ -65,10 +67,12 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
     amount?: number;
     lockedAt?: string;
     transactionId?: string;
+    entityKind?: 'transaction' | 'driver';
+    entityLabel?: string;
   } | null>(null);
   const [adminLoading, setAdminLoading] = useState(false);
 
-  const startSession = async (driver: Driver, notes?: string) => {
+  const startSession = async (driver: Driver, notes?: string): Promise<boolean> => {
     if (!currentUser) throw new Error('Usuário não autenticado.');
     try {
       setIsSubmitting(true);
@@ -81,6 +85,23 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
       setGeneralVoucher('');
       setSessionNotes(notes || '');
       setMissingAmount(0);
+      return true;
+    } catch (err: any) {
+      // 409 estruturado vindo do servidor (motorista já em conciliação por
+      // outro operador) → propaga para a UI abrir o modal vermelho.
+      if (err?.code === 409 && err?.lockedByUserName) {
+        setDetailedBlock({
+          blockedByUserName: err.lockedByUserName,
+          description: err.driverName,
+          amount: undefined,
+          lockedAt: err.startedAt,
+          transactionId: undefined,
+          entityKind: 'driver',
+          entityLabel: 'Motorista'
+        });
+        return false;
+      }
+      throw err;
     } finally {
       setIsSubmitting(false);
     }
@@ -116,11 +137,22 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
 
     if (isSelecting) {
       if (!currentUser) return;
+      // Lock otimista: atualiza a UI imediatamente para responsividade.
+      // Se o servidor devolver 409, revertemos e abrimos o modal vermelho.
+      setSelectedTxIds((prev) => (prev.includes(tx.id) ? prev : [...prev, tx.id]));
+      setSelectedTransactionsMap((prevMap) =>
+        prevMap[tx.id] ? prevMap : { ...prevMap, [tx.id]: tx }
+      );
       try {
         await api.lockTransactions([tx.id], activeSessionId, currentUser);
-        setSelectedTxIds((prev) => [...prev, tx.id]);
-        setSelectedTransactionsMap((prevMap) => ({ ...prevMap, [tx.id]: tx }));
       } catch (err: any) {
+        // Reverte otimisticamente o estado local.
+        setSelectedTxIds((prev) => prev.filter((id) => id !== tx.id));
+        setSelectedTransactionsMap((prevMap) => {
+          const mapCopy = { ...prevMap };
+          delete mapCopy[tx.id];
+          return mapCopy;
+        });
         showDetailedBlockFromError(err, tx);
       }
     } else {
@@ -147,20 +179,24 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
     if (!currentUser) return;
     const newIds = allowed.map((t) => t.id);
 
+    // Otimista: aplica localmente primeiro; em caso de 409 reverte.
+    const newMap: Record<string, Transaction> = {};
+    allowed.forEach((t) => {
+      newMap[t.id] = t;
+    });
+    setSelectedTxIds((prev) => Array.from(new Set([...prev, ...newIds])));
+    setSelectedTransactionsMap((prev) => ({ ...prev, ...newMap }));
+
     try {
       await api.lockTransactions(newIds, activeSessionId, currentUser);
-
-      const newMap: Record<string, Transaction> = {};
-      allowed.forEach((t) => {
-        newMap[t.id] = t;
-      });
-
-      setSelectedTxIds((prev) => {
-        const combined = Array.from(new Set([...prev, ...newIds]));
-        return combined;
-      });
-      setSelectedTransactionsMap((prev) => ({ ...prev, ...newMap }));
     } catch (err: any) {
+      // Reverte tudo o que otimisticamente aplicamos.
+      setSelectedTxIds((prev) => prev.filter((id) => !newIds.includes(id)));
+      setSelectedTransactionsMap((prev) => {
+        const mapCopy = { ...prev };
+        for (const id of newIds) delete mapCopy[id];
+        return mapCopy;
+      });
       showDetailedBlockFromError(err, allowed[0]);
     }
   };
@@ -222,6 +258,8 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
     amount?: number;
     lockedAt?: string;
     transactionId?: string;
+    entityKind?: 'transaction' | 'driver';
+    entityLabel?: string;
   }) => {
     setDetailedBlock(info);
   };
@@ -401,6 +439,8 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
         description={detailedBlock?.description}
         amount={detailedBlock?.amount}
         lockedAt={detailedBlock?.lockedAt}
+        entityKind={detailedBlock?.entityKind}
+        entityLabel={detailedBlock?.entityLabel}
         isAdmin={isUserAdmin}
         adminLoading={adminLoading}
         onAdminForceUnlock={handleAdminForceUnlock}

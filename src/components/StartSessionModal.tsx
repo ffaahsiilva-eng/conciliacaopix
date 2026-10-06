@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Driver } from '../types';
+import { useAuth } from '../context/AuthContext';
 import { useReconciliationSession } from '../context/ReconciliationSessionContext';
-import { Truck, Search, X, Check, ArrowRight, UserPlus, AlertCircle } from 'lucide-react';
+import { Truck, Search, X, Check, ArrowRight, UserPlus, AlertCircle, Lock, Clock } from 'lucide-react';
 import { formatPlate } from '../services/api';
 import { LicensePlateBadge } from './LicensePlateBadge';
 
@@ -19,6 +20,7 @@ export const StartSessionModal: React.FC<StartSessionModalProps> = ({
   onOpenNewDriver
 }) => {
   const { startSession } = useReconciliationSession();
+  const { currentUser } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedDriver, setSelectedDriver] = useState<Driver | null>(null);
   const [notes, setNotes] = useState('');
@@ -38,6 +40,15 @@ export const StartSessionModal: React.FC<StartSessionModalProps> = ({
     );
   });
 
+  const formatStartedAt = (iso: string) => {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return iso;
+    }
+  };
+
   const handleStart = async () => {
     if (!selectedDriver) {
       setErrorMsg('Por favor selecione um motorista para iniciar a conciliação.');
@@ -46,10 +57,16 @@ export const StartSessionModal: React.FC<StartSessionModalProps> = ({
     try {
       setLoading(true);
       setErrorMsg(null);
-      await startSession(selectedDriver, notes);
-      onClose();
+      const ok = await startSession(selectedDriver, notes);
+      // Só fecha este modal se a sessão foi criada com sucesso.
+      // Em 409 o context abriu o modal vermelho e mantém este aberto para o usuário escolher outro motorista.
+      if (ok) {
+        onClose();
+      }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Erro ao iniciar sessão.');
+      if (!err?.code) {
+        setErrorMsg(err.message || 'Erro ao iniciar sessão.');
+      }
     } finally {
       setLoading(false);
     }
@@ -117,14 +134,27 @@ export const StartSessionModal: React.FC<StartSessionModalProps> = ({
             ) : (
               filteredDrivers.map((driver) => {
                 const isSelected = selectedDriver?.id === driver.id;
+                const isMine = driver.active_session?.operator_user_id === currentUser?.id;
+                const isBlockedByOther = !!driver.active_session && !isMine;
+                const isDisabled = isBlockedByOther;
                 return (
                   <div
                     key={driver.id}
-                    onClick={() => setSelectedDriver(driver)}
-                    className={`p-3 rounded-xl border text-xs cursor-pointer transition-all flex items-center justify-between ${
-                      isSelected
-                        ? 'bg-blue-50 border-blue-500 text-blue-900 shadow-xs font-semibold'
-                        : 'bg-white border-slate-200 hover:border-slate-300 text-slate-700'
+                    onClick={() => {
+                      if (isDisabled) return;
+                      setSelectedDriver(driver);
+                    }}
+                    title={
+                      isBlockedByOther
+                        ? `Em conciliação por ${driver.active_session?.operator_user_name}`
+                        : undefined
+                    }
+                    className={`p-3 rounded-xl border text-xs transition-all flex items-center justify-between ${
+                      isDisabled
+                        ? 'bg-slate-100 border-slate-200 opacity-70 cursor-not-allowed'
+                        : isSelected
+                        ? 'bg-blue-50 border-blue-500 text-blue-900 shadow-xs cursor-pointer'
+                        : 'bg-white border-slate-200 hover:border-slate-300 text-slate-700 cursor-pointer'
                     }`}
                   >
                     <div className="flex items-center space-x-3">
@@ -140,15 +170,38 @@ export const StartSessionModal: React.FC<StartSessionModalProps> = ({
                           <span>{driver.name}</span>
                           <LicensePlateBadge plate={driver.vehicle_plate} className="scale-75 origin-left" />
                         </div>
-                        <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-2">
+                        <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-2 flex-wrap">
                           {driver.route && <span>Rota: {driver.route}</span>}
                           {driver.phone && <span>• Tel: {driver.phone}</span>}
                         </div>
+                        {driver.active_session ? (
+                          <div className={`mt-1 inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
+                            isMine
+                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                              : 'bg-red-100 text-red-800 border border-red-200'
+                          }`}>
+                            {isMine ? (
+                              <>
+                                <Clock className="w-3 h-3" />
+                                <span>Sua sessão desde {formatStartedAt(driver.active_session.started_at)} — pode reentrar</span>
+                              </>
+                            ) : (
+                              <>
+                                <Lock className="w-3 h-3" />
+                                <span>Em uso por {driver.active_session.operator_user_name} desde {formatStartedAt(driver.active_session.started_at)}</span>
+                              </>
+                            )}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
 
                     <div className="flex items-center space-x-2">
-                      {isSelected ? (
+                      {isDisabled ? (
+                        <div className="w-5 h-5 rounded-full bg-red-200 text-red-700 flex items-center justify-center">
+                          <Lock className="w-3 h-3" />
+                        </div>
+                      ) : isSelected ? (
                         <div className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center shadow-xs">
                           <Check className="w-3.5 h-3.5 stroke-[3]" />
                         </div>
@@ -203,9 +256,9 @@ export const StartSessionModal: React.FC<StartSessionModalProps> = ({
 
           <button
             onClick={handleStart}
-            disabled={!selectedDriver || loading}
+            disabled={!selectedDriver || loading || (!!selectedDriver?.active_session && selectedDriver.active_session.operator_user_id !== currentUser?.id)}
             className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl text-xs font-bold shadow-xs transition-all ${
-              selectedDriver && !loading
+              selectedDriver && !loading && !(selectedDriver.active_session && selectedDriver.active_session.operator_user_id !== currentUser?.id)
                 ? 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
                 : 'bg-slate-200 text-slate-400 border border-slate-200 cursor-not-allowed'
             }`}

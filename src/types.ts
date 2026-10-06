@@ -39,6 +39,18 @@ export interface Driver {
   total_sessions?: number;
   total_reconciled_pix_count?: number;
   total_reconciled_amount?: number;
+  /**
+   * Sessão IN_PROGRESS ativa para este motorista (se houver).
+   * Preenchido pelo servidor em `GET /api/drivers` para a UI mostrar
+   * o aviso "Em uso por X desde HH:MM" no StartSessionModal e bloquear
+   * tentativa concorrente.
+   */
+  active_session?: {
+    session_id: string;
+    operator_user_id: string;
+    operator_user_name: string;
+    started_at: string;
+  } | null;
 }
 
 export interface BankAccount {

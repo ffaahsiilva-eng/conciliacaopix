@@ -88,6 +88,8 @@ function AppContent() {
       if (
         event.type === 'DRIVERS_UPDATED' ||
         event.type === 'RECONCILIATION_COMPLETED' ||
+        event.type === 'RECONCILIATION_SESSION_STARTED' ||
+        event.type === 'RECONCILIATION_SESSION_DELETED' ||
         event.type === 'DATABASE_CLEANED' ||
         event.type === 'DATABASE_RESTORED'
       ) {
