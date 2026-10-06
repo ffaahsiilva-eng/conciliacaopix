@@ -111,7 +111,6 @@ export async function safeCloudSqlQuery<T extends pg.QueryResultRow = any>(
   return null;
 }
 
-let knownHealthySnapshotLen = 0;
 
 export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
   // Try up to 4 times with backoff to handle cold start when Cloud SQL is spinning up from scale-to-zero
@@ -124,7 +123,6 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
       );
       if (res && res.rows.length > 0 && res.rows[0]?.data) {
         const raw = Buffer.from(res.rows[0].data, 'base64');
-        knownHealthySnapshotLen = raw.length;
         // Detect gzip magic bytes (1f 8b) and decompress if needed
         let buf: Buffer;
         if (raw.length >= 2 && raw[0] === 0x1f && raw[1] === 0x8b) {
@@ -134,6 +132,8 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
           buf = raw;
         }
         if (buf.length > 0) {
+          // Track the raw SQLite bytes for consistent Safety Shield comparisons
+          knownHealthyRawBytes = buf.length;
           console.log(`[CloudSQL] Loaded database snapshot (${buf.length} bytes) from Google Cloud SQL.`);
           return buf;
         }
@@ -157,52 +157,61 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
 
 let cloudSqlSavePromise: Promise<void> | null = null;
 
+// Track the raw byte size of the last known healthy DB saved to Cloud SQL
+// ALWAYS store raw bytes (not base64/compressed) for consistent comparison
+let knownHealthyRawBytes = 0;
+
 export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
   const currentPromise = cloudSqlSavePromise || Promise.resolve();
-  
+
   const nextPromise = currentPromise.then(async () => {
     try {
-      // SAFETY SHIELD: Only query length if not already known in memory
-      let existingLen = knownHealthySnapshotLen;
-      if (existingLen === 0) {
-        const checkRes = await safeCloudSqlQuery<{ len: number }>(
-          `SELECT length(data) as len FROM system_snapshots WHERE key = 'main_db'`,
-          undefined,
-          15000
+      // SAFETY SHIELD: Only block truly empty/corrupted databases (< 10KB)
+      // A real SQLite with schema only is ~50-100KB; 10KB means something went very wrong
+      const EMPTY_DB_THRESHOLD = 10000; // 10KB - truly empty/corrupted db
+      if (buffer.length < EMPTY_DB_THRESHOLD) {
+        console.error(
+          `[CloudSQL SAFETY SHIELD] BLOCKED: Current buffer is only ${buffer.length} bytes, which looks like an empty/corrupted database. Refusing to overwrite Cloud SQL.`
         );
-        existingLen = Number(checkRes?.rows?.[0]?.len || 0);
-        if (existingLen > 0) knownHealthySnapshotLen = existingLen;
+        return;
       }
 
-      // If an existing database snapshot had substantial data (>500KB base64, ~375KB sqlite)
-      // and the new buffer is an empty blank database (<300KB), REFUSE to overwrite main_db!
-      if (existingLen > 500000 && buffer.length < 300000) {
+      // If we know the Cloud SQL DB was significantly larger than what we have now,
+      // only block if current is less than 20% of the known size (likely a reset/corruption)
+      if (knownHealthyRawBytes > 0 && buffer.length < knownHealthyRawBytes * 0.20) {
         console.error(
-          `[CloudSQL SAFETY SHIELD] BLOCKED overwrite! Cloud SQL has a healthy snapshot of ${existingLen} bytes, but current buffer is only ${buffer.length} bytes. Saving to emergency backup instead of overwriting.`
+          `[CloudSQL SAFETY SHIELD] BLOCKED: Current buffer (${buffer.length} bytes) is less than 20% of last known healthy size (${knownHealthyRawBytes} bytes). Possible data corruption. Saving to emergency backup.`
         );
+        const b64Emergency = buffer.toString('base64');
         await safeCloudSqlQuery(
           `INSERT INTO system_snapshots (key, data, updated_at) 
            VALUES ('main_db_emergency_backup', $1, NOW()) 
            ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-          [buffer.toString('base64')],
+          [b64Emergency],
           15000
         );
         return;
       }
 
-      // Ultra-fast gzip compression level 3 (10x faster than level 9 with 99% identical ratio)
+      // Compress and save
       const compressed = gzipSync(buffer, { level: 3 });
       const b64 = compressed.toString('base64');
-      knownHealthySnapshotLen = b64.length;
 
-      // Single multi-row UPSERT: save both main_db and main_db_backup in ONE roundtrip!
-      await safeCloudSqlQuery(
+      const result = await safeCloudSqlQuery(
         `INSERT INTO system_snapshots (key, data, updated_at) 
          VALUES ('main_db', $1, NOW()), ('main_db_backup', $1, NOW()) 
          ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
         [b64],
         20000
       );
+
+      if (result) {
+        // Track in raw bytes for consistent future comparisons
+        knownHealthyRawBytes = buffer.length;
+        console.log(`[CloudSQL] Saved snapshot: ${buffer.length} bytes raw → ${compressed.length} bytes gzip → ${b64.length} bytes b64`);
+      } else {
+        console.warn(`[CloudSQL] Save returned null (connection issue), data may not have been persisted.`);
+      }
     } catch (err: any) {
       console.warn('[CloudSQL] Warning persisting snapshot to Cloud SQL:', err?.message || err);
     }
@@ -211,6 +220,7 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
   cloudSqlSavePromise = nextPromise;
   return nextPromise;
 }
+
 
 export async function getDatabase(): Promise<Database> {
   if (dbInstance) {
@@ -279,17 +289,20 @@ export async function getDatabase(): Promise<Database> {
 
 export async function persistDatabase(): Promise<void> {
   if (!dbInstance) return;
+  const data = dbInstance.export();
+  const buffer = Buffer.from(data);
+  
+  // Save to local disk (best-effort, ephemeral on Vercel)
   try {
-    const data = dbInstance.export();
-    const buffer = Buffer.from(data);
     const tempFile = `${DB_FILE}.tmp`;
     fs.writeFileSync(tempFile, buffer);
     fs.renameSync(tempFile, DB_FILE);
-
-    await saveSnapshotToCloudSql(buffer);
   } catch (err) {
-    console.error('[DB] Error persisting database:', err);
+    console.error('[DB] Error saving to local disk (non-fatal):', err);
   }
+
+  // Save to Cloud SQL (required for persistence across Vercel instances)
+  await saveSnapshotToCloudSql(buffer);
 }
 
 export function persistDatabaseSync(): void {
