@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api, formatDateTime } from '../services/api';
 import { AuditLog } from '../types';
 import { useCompany } from '../context/CompanyContext';
-import { ShieldCheck, Search, X, RotateCcw, Activity, AlertTriangle, CheckCircle2, User, Terminal } from 'lucide-react';
+import { ShieldCheck, Search, X, RotateCcw, Activity, AlertTriangle, CheckCircle2, User, Terminal, ArrowRight } from 'lucide-react';
 import { LicensePlateBadge } from '../components/LicensePlateBadge';
 import { formatCurrency } from '../services/api';
 
@@ -68,6 +68,7 @@ export const LogsView: React.FC = () => {
       'STATEMENT_DELETED': 'Extrato Excluído',
       'TRANSACTION_DELETED': 'Transação Excluída',
       'TRANSACTION_CREATED': 'Transação Cadastrada',
+      'TRANSACTION_MANUALLY_EDITED': 'Edição Manual de Lançamento',
     };
     return map[action] || action.replace(/_/g, ' ');
   };
@@ -165,12 +166,35 @@ export const LogsView: React.FC = () => {
       );
     }
 
+    if (log.action === 'TRANSACTION_MANUALLY_EDITED' && parsed.previous && parsed.updated) {
+      const diffs: React.ReactNode[] = [];
+      Object.keys(parsed.updated).forEach(key => {
+        const oldVal = parsed.previous[key];
+        const newVal = parsed.updated[key];
+        if (oldVal !== newVal && key !== 'updated_at' && key !== 'id') {
+          diffs.push(
+            <div key={key} className="bg-white shadow-sm border border-slate-200 px-2 py-1 rounded-md text-slate-600 flex items-center gap-1.5">
+              <span className="font-bold text-[9px] uppercase text-slate-500">{translateKey(key)}:</span>
+              <span className="line-through opacity-60 text-red-600 truncate max-w-[150px]" title={String(oldVal)}>{translateValue(oldVal)}</span>
+              <ArrowRight className="w-3 h-3 text-slate-400 shrink-0" />
+              <span className="text-emerald-700 font-medium truncate max-w-[150px]" title={String(newVal)}>{translateValue(newVal)}</span>
+            </div>
+          );
+        }
+      });
+      return diffs.length > 0 ? (
+        <div className="flex flex-wrap gap-2 text-[10px]">{diffs}</div>
+      ) : (
+        <span className="text-[10px] text-slate-500 italic">Sem alterações visíveis</span>
+      );
+    }
+
     // Default JSON fallback mapped to badges
     return (
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
         {Object.entries(parsed).map(([key, val]) => (
-          <span key={key} className="bg-slate-50 border border-slate-200 px-1.5 py-0.5 rounded text-slate-600 max-w-xs truncate">
-            <b className="text-slate-500 uppercase text-[9px] mr-1">{translateKey(key)}:</b> {translateValue(val)}
+          <span key={key} className="bg-slate-50 border border-slate-200 px-1.5 py-0.5 rounded text-slate-600 max-w-xs truncate" title={typeof val === 'object' ? JSON.stringify(val) : String(val)}>
+            <b className="text-slate-500 uppercase text-[9px] mr-1">{translateKey(key)}:</b> {typeof val === 'object' ? JSON.stringify(val) : translateValue(val)}
           </span>
         ))}
       </div>
