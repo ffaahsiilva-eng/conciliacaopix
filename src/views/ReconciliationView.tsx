@@ -998,7 +998,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                   const isPix = tx.is_pix === 1 || tx.is_pix === true;
                   const isCobranca = tx.description && tx.description.toLowerCase().includes('cobrança');
                   const isDebit = tx.type === 'DEBIT';
-                  const isTemporarilyLockedByOther = tx.locked_by_user_id && tx.locked_by_user_id !== currentUser?.id;
+                  const isTemporarilyLockedByOther = !isSelected && tx.locked_by_user_id && tx.locked_by_user_id !== currentUser?.id;
                   const isLockedByMeInAnotherSession = tx.locked_by_user_id === currentUser?.id && !isSelected;
                   const isBlockedFromSelection = isReconciled || isReturned || isIgnored || isDebit || isTemporarilyLockedByOther || isLockedByMeInAnotherSession;
 
@@ -1006,18 +1006,14 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                     <tr
                       key={tx.id}
                       onClick={() => {
-                        if (isTemporarilyLockedByOther) {
-                          // Mostrar modal detalhado informando quem está usando o item
-                          showDetailedBlock({
-                            blockedByUserName: tx.locked_by_user_name || 'Desconhecido',
-                            description: tx.description,
-                            amount: tx.amount,
-                            lockedAt: tx.locked_at,
-                            transactionId: tx.id
-                          });
-                          return;
-                        }
-                        if (isSessionActive && !isBlockedFromSelection) {
+                        // Let the server be the source of truth for locks. 
+                        // If it's a stale local lock, the server will accept the lock request.
+                        // If it's truly locked, the server will throw 409 and the catch block will show the modal.
+                        if (isSessionActive) {
+                          // Prevent selecting truly read-only items (reconciled, returned, ignored, debit, or ghost locked)
+                          const isHardBlocked = isReconciled || isReturned || isIgnored || isDebit || isLockedByMeInAnotherSession;
+                          if (isHardBlocked) return;
+                          
                           toggleTransaction(tx);
                         } else if (isDebit) {
                           setDebitTxForLinking(tx);
