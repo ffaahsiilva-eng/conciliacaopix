@@ -38,13 +38,17 @@ interface ReconciliationSessionContextType {
     description?: string;
     amount?: number;
     lockedAt?: string;
+    transactionId?: string;
   }) => void;
+  adminUnlockLoading: boolean;
+  handleAdminForceUnlock: () => Promise<void>;
+  handleAdminForceTakeOver: () => Promise<void>;
 }
 
 const ReconciliationSessionContext = createContext<ReconciliationSessionContextType | undefined>(undefined);
 
 export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { currentUser } = useAuth();
+  const { currentUser, isAdmin: isUserAdmin } = useAuth();
   const [activeDriver, setActiveDriver] = useState<Driver | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [selectedTxIds, setSelectedTxIds] = useState<string[]>([]);
@@ -60,7 +64,9 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
     description?: string;
     amount?: number;
     lockedAt?: string;
+    transactionId?: string;
   } | null>(null);
+  const [adminLoading, setAdminLoading] = useState(false);
 
   const startSession = async (driver: Driver, notes?: string) => {
     if (!currentUser) throw new Error('Usuário não autenticado.');
@@ -115,14 +121,14 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
         setSelectedTxIds((prev) => [...prev, tx.id]);
         setSelectedTransactionsMap((prevMap) => ({ ...prevMap, [tx.id]: tx }));
       } catch (err: any) {
-        // Detalhar bloqueio quando o servidor informa quem está usando o item
         const detail = extractBlockDetail(err, tx);
         if (detail) {
           showDetailedBlock({
             blockedByUserName: detail.userName,
             description: tx.description,
             amount: tx.amount,
-            lockedAt: detail.lockedAt
+            lockedAt: detail.lockedAt,
+            transactionId: tx.id
           });
         } else {
           showBlockMessage(err.message || 'Não foi possível bloquear a transação.');
@@ -166,14 +172,14 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
       });
       setSelectedTransactionsMap((prev) => ({ ...prev, ...newMap }));
     } catch (err: any) {
-      // Tentar extrair o nome do usuário que bloqueou do próprio payload do erro
       const detail = extractBlockDetail(err, allowed[0]);
       if (detail) {
         showDetailedBlock({
           blockedByUserName: detail.userName,
           description: allowed[0].description,
           amount: allowed[0].amount,
-          lockedAt: detail.lockedAt
+          lockedAt: detail.lockedAt,
+          transactionId: allowed[0].id
         });
       } else {
         showBlockMessage(err.message || 'Erro ao tentar bloquear as transações.');
@@ -207,8 +213,60 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
     description?: string;
     amount?: number;
     lockedAt?: string;
+    transactionId?: string;
   }) => {
     setDetailedBlock(info);
+  };
+
+  /**
+   * Admin: libera o item bloqueado por outro usuário (não seleciona para si).
+   * O outro usuário recebe o evento TRANSACTIONS_UNLOCKED em tempo real.
+   */
+  const handleAdminForceUnlock = async () => {
+    if (!detailedBlock?.transactionId || !currentUser) return;
+    try {
+      setAdminLoading(true);
+      await api.unlockTransactions([detailedBlock.transactionId], currentUser);
+      setDetailedBlock(null);
+    } catch (err: any) {
+      showBlockMessage(err.message || 'Falha ao desbloquear como administrador.');
+    } finally {
+      setAdminLoading(false);
+    }
+  };
+
+  /**
+   * Admin: desbloqueia o item e já marca como bloqueado para si (force lock).
+   * Equivale a tomar o lock do outro usuário (auditado).
+   */
+  const handleAdminForceTakeOver = async () => {
+    if (!detailedBlock?.transactionId || !currentUser) return;
+    try {
+      setAdminLoading(true);
+      await api.unlockTransactions([detailedBlock.transactionId], currentUser);
+      await api.lockTransactions(
+        [detailedBlock.transactionId],
+        activeSessionId,
+        currentUser,
+        undefined,
+        { force: true }
+      );
+      // Adiciona localmente à seleção
+      const tx: Transaction = {
+        id: detailedBlock.transactionId,
+        description: detailedBlock.description,
+        amount: detailedBlock.amount
+      } as Transaction;
+      setSelectedTxIds((prev) =>
+        prev.includes(tx.id) ? prev : [...prev, tx.id]
+      );
+      setSelectedTransactionsMap((prev) => ({ ...prev, [tx.id]: tx }));
+      setDetailedBlock(null);
+    } catch (err: any) {
+      showBlockMessage(err.message || 'Falha ao tomar o lock como administrador.');
+    } finally {
+      setAdminLoading(false);
+    }
   };
 
   const clearSelection = () => {
@@ -301,7 +359,10 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
         cancelSession,
         isSubmitting,
         showBlockMessage,
-        showDetailedBlock
+        showDetailedBlock,
+        adminUnlockLoading: adminLoading,
+        handleAdminForceUnlock,
+        handleAdminForceTakeOver
       }}
     >
       {children}
@@ -332,6 +393,10 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
         description={detailedBlock?.description}
         amount={detailedBlock?.amount}
         lockedAt={detailedBlock?.lockedAt}
+        isAdmin={isUserAdmin}
+        adminLoading={adminLoading}
+        onAdminForceUnlock={handleAdminForceUnlock}
+        onAdminForceTakeOver={handleAdminForceTakeOver}
       />
     </ReconciliationSessionContext.Provider>
   );

@@ -1887,20 +1887,30 @@ app.post('/api/transactions/lock', async (req, res) => {
     checkStmt.free();
 
     // Validate
+    const forceAdmin = actorUser.role === 'ADMIN' && req.body.force === true;
+    const forcedFrom: { id: string; previousUserId: string | null; previousUserName: string | null }[] = [];
     for (const tx of existing) {
       if (tx.status === 'RECONCILED' || tx.status === 'IGNORED' || tx.status === 'RETURNED') {
         const translatedStatus = tx.status === 'RECONCILED' ? 'CONCILIADO' : (tx.status === 'IGNORED' ? 'DESCONSIDERADO' : 'ESTORNADO');
         return res.status(409).json({ error: `Transação "${tx.description}" já foi processada (Status: ${translatedStatus}).` });
       }
       if (tx.locked_by_user_id && tx.locked_by_user_id !== actorUser.id) {
-        return res.status(409).json({ error: `Transação "${tx.description}" (R$ ${Number(tx.amount).toFixed(2)}) já está sendo concilada por ${tx.locked_by_user_name}.` });
+        if (!forceAdmin) {
+          return res.status(409).json({ error: `Transação "${tx.description}" (R$ ${Number(tx.amount).toFixed(2)}) já está sendo concilada por ${tx.locked_by_user_name}.` });
+        }
+        // Admin força desbloqueio — registra para auditoria
+        forcedFrom.push({
+          id: tx.id,
+          previousUserId: tx.locked_by_user_id,
+          previousUserName: tx.locked_by_user_name
+        });
       }
     }
 
     // 2. Lock them
     for (const id of transaction_ids) {
       db.run(
-        `UPDATE transactions SET 
+        `UPDATE transactions SET
           locked_at = ?,
           locked_by_user_id = ?,
           locked_by_user_name = ?,
@@ -1909,8 +1919,23 @@ app.post('/api/transactions/lock', async (req, res) => {
         [nowIso, actorUser.id, actorUser.name, session_id || null, id, companyId]
       );
     }
-    
+
     scheduleSaveDatabase();
+
+    // Auditoria: registrar quando admin toma lock de outro usuário
+    if (forcedFrom.length > 0) {
+      try {
+        for (const f of forcedFrom) {
+          await logAudit('LOCK_FORCED_BY_ADMIN', 'TRANSACTION', f.id, actorUser, {
+            previousUserId: f.previousUserId,
+            previousUserName: f.previousUserName,
+            action: req.body.action || 'SELECT'
+          }, companyId);
+        }
+      } catch (auditErr) {
+        console.error('[AUDIT] Failed to record forced lock:', auditErr);
+      }
+    }
 
     // Capture rich details about the locked transactions so other users can see
     // exactly which PIX / Cobrança each operator is working on in real time.

@@ -515,11 +515,23 @@ export const api = {
     return res.json();
   },
 
-  async lockTransactions(transactionIds: string[], sessionId: string | null, actorUser: User, action?: string): Promise<{ success: boolean; message: string }> {
+  async lockTransactions(
+    transactionIds: string[],
+    sessionId: string | null,
+    actorUser: User,
+    action?: string,
+    options?: { force?: boolean }
+  ): Promise<{ success: boolean; message: string }> {
     const res = await customFetch('/api/transactions/lock', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transaction_ids: transactionIds, session_id: sessionId, actorUser, action })
+      body: JSON.stringify({
+        transaction_ids: transactionIds,
+        session_id: sessionId,
+        actorUser,
+        action,
+        force: options?.force === true
+      })
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Falha ao bloquear transações.');

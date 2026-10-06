@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Lock, User, Clock, AlertTriangle, X, Eye, Activity } from 'lucide-react';
+import { Lock, User, Clock, AlertTriangle, X, Eye, Activity, ShieldCheck, KeyRound } from 'lucide-react';
 import { subscribeToRealtimeEvents } from '../services/api';
 import { formatCurrency, formatDateTime } from '../services/api';
 
@@ -286,6 +286,14 @@ interface BlockDetailedModalProps {
   description?: string;
   amount?: number;
   lockedAt?: string;
+  /** Admin-only: dispara desbloqueio forçado. */
+  onAdminForceUnlock?: () => Promise<void> | void;
+  /** Admin-only: desbloqueia e já bloqueia para si mesmo em seguida. */
+  onAdminForceTakeOver?: () => Promise<void> | void;
+  /** Indica se o usuário atual tem permissão de admin. */
+  isAdmin?: boolean;
+  /** Estado de carregamento dos botões admin. */
+  adminLoading?: boolean;
 }
 
 export const BlockDetailedModal: React.FC<BlockDetailedModalProps> = ({
@@ -294,7 +302,11 @@ export const BlockDetailedModal: React.FC<BlockDetailedModalProps> = ({
   blockedByUserName,
   description,
   amount,
-  lockedAt
+  lockedAt,
+  onAdminForceUnlock,
+  onAdminForceTakeOver,
+  isAdmin,
+  adminLoading
 }) => {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -381,6 +393,47 @@ export const BlockDetailedModal: React.FC<BlockDetailedModalProps> = ({
               conflitos e duplicidade de comprovantes.
             </p>
           </div>
+
+          {isAdmin && (onAdminForceUnlock || onAdminForceTakeOver) ? (
+            <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <ShieldCheck className="w-4 h-4 text-amber-700" />
+                <p className="text-xs font-bold text-amber-800 uppercase tracking-wider">
+                  Opções de Administrador
+                </p>
+              </div>
+              <p className="text-xs text-amber-800 mb-3 leading-snug">
+                Como <strong>ADMIN</strong>, você pode liberar este item. A ação
+                será registrada na auditoria do sistema.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                {onAdminForceUnlock ? (
+                  <button
+                    type="button"
+                    onClick={onAdminForceUnlock}
+                    disabled={adminLoading}
+                    title="Apenas libera o item (o outro usuário será notificado em tempo real)"
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-2 bg-amber-600 hover:bg-amber-700 disabled:bg-amber-300 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:cursor-wait"
+                  >
+                    <KeyRound className="w-3.5 h-3.5" />
+                    <span>Desbloquear</span>
+                  </button>
+                ) : null}
+                {onAdminForceTakeOver ? (
+                  <button
+                    type="button"
+                    onClick={onAdminForceTakeOver}
+                    disabled={adminLoading}
+                    title="Desbloqueia o item e já bloqueia para você"
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-2 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:cursor-wait"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Desbloquear e Conciliar</span>
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
 
         <div className="bg-slate-50 px-6 py-4 border-t border-slate-200">
