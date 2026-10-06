@@ -223,21 +223,6 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                 locked_at: new Date().toISOString()
               } : t)
             );
-            // Show LARGE red alert when locked by another user (popup em tempo real)
-            if (lockedByUserId !== currentUser?.id) {
-              const firstDesc = descriptions && Object.values(descriptions)[0] as string | undefined;
-              const firstAmount = amounts && (Object.values(amounts)[0] as number | undefined);
-              const more = transactionIds.length > 1 ? ` (+${transactionIds.length - 1} outros)` : '';
-              const verb = (event.payload?.action === 'DETAILS')
-                ? 'visualizando'
-                : (event.payload?.action === 'EDIT')
-                ? 'editando'
-                : 'conciliando';
-              setLiveNotification(
-                `🚨 ${lockedByUserName} está ${verb} ${firstDesc ? `"${(firstDesc || '').substring(0, 40)}${(firstDesc || '').length > 40 ? '…' : ''}"` : `${transactionIds.length} PIX/Cobrança(s)`}${firstAmount ? ` (R$ ${Number(firstAmount).toFixed(2)})` : ''}${more}`
-              );
-              setAlertLevel('danger');
-            }
           }
         } else if (event.type === 'TRANSACTIONS_UNLOCKED') {
           // Update unlock state locally - avoid full refetch for frequent unlock events
