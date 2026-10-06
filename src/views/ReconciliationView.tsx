@@ -120,6 +120,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
 
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [liveNotification, setLiveNotification] = useState<string | null>(null);
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
 
   // Modals for transaction deletion, ignore, mark return or edit
   const [openMenuTxId, setOpenMenuTxId] = useState<string | null>(null);
@@ -746,11 +747,16 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
             <strong>{pagination.totalItems}</strong> lançamentos
           </span>
           <button
-            onClick={() => fetchTransactions(true)}
+            onClick={async () => {
+              setIsManualRefreshing(true);
+              await fetchTransactions(true);
+              setIsManualRefreshing(false);
+            }}
+            disabled={isManualRefreshing}
             title="Atualizar dados agora"
-            className="p-1.5 hover:bg-slate-100 border border-transparent hover:border-slate-200 rounded-lg text-slate-400 hover:text-indigo-600 transition-all active:scale-95 flex items-center gap-1.5"
+            className={`p-1.5 hover:bg-slate-100 border border-transparent hover:border-slate-200 rounded-lg text-slate-400 hover:text-indigo-600 transition-all active:scale-95 flex items-center gap-1.5 ${isManualRefreshing ? 'opacity-70 cursor-wait' : ''}`}
           >
-            <RotateCcw className="w-4 h-4" />
+            <RotateCcw className={`w-4 h-4 ${isManualRefreshing ? 'animate-spin text-indigo-500' : ''}`} />
           </button>
         </div>
       </div>
