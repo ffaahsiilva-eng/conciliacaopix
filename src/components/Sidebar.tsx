@@ -23,8 +23,8 @@ import {
 import { formatPlate } from '../services/api';
 
 interface SidebarProps {
-  currentTab: 'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users' | 'backup';
-  setCurrentTab: (tab: 'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users' | 'backup') => void;
+  currentTab: 'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users' | 'backup' | 'logs';
+  setCurrentTab: (tab: 'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users' | 'backup' | 'logs') => void;
   isCollapsed: boolean;
   setIsCollapsed: (val: boolean) => void;
   onOpenUpload: () => void;
@@ -48,7 +48,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'drivers' as const, label: 'Cadastro de Motoristas', description: 'Frota, rotas e placas', icon: Truck },
     { id: 'sessions' as const, label: 'Acertos Finalizados', description: 'Histórico & comprovantes', icon: FileSpreadsheet },
     { id: 'batches' as const, label: 'Extratos Importados', description: 'Lotes OFX e CSV', icon: UploadCloud },
-    { id: 'reports' as const, label: 'Relatórios & Auditoria', description: 'Totais e conformidade', icon: BarChart3 },
+    { id: 'reports' as const, label: 'Relatórios', description: 'Totais mensais e diarios', icon: BarChart3 },
+    ...(currentUser?.role === 'ADMIN' ? [{ id: 'logs' as const, label: 'Logs do Sistema', description: 'Auditoria e Erros', icon: ShieldCheck }] : []),
     ...(currentUser?.role === 'ADMIN' ? [{ id: 'users' as const, label: 'Controle de Usuários', description: 'Níveis de permissão', icon: Users }] : [])
   ];
 

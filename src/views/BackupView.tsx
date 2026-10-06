@@ -419,26 +419,26 @@ export const BackupView: React.FC<BackupViewProps> = ({ onNavigateToConciliation
             {restoreResult && (
               <div
                 className={`p-4 rounded-xl text-xs space-y-2 border animate-fade-in ${
-                  restoreResult.type === 'success'
+                  restoreResult?.type === 'success'
                     ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
                     : 'bg-red-50 text-red-900 border-red-300'
                 }`}
               >
                 <div className="flex items-start gap-2.5">
-                  {restoreResult.type === 'success' ? (
+                  {restoreResult?.type === 'success' ? (
                     <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
                   ) : (
                     <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
                   )}
                   <div>
                     <p className="font-bold text-sm">
-                      {restoreResult.type === 'success' ? 'Restauração Concluída!' : 'Erro na Restauração'}
+                      {restoreResult?.type === 'success' ? 'Restauração Concluída!' : 'Erro na Restauração'}
                     </p>
-                    <p className="text-xs mt-0.5 leading-relaxed">{restoreResult.message}</p>
+                    <p className="text-xs mt-0.5 leading-relaxed">{restoreResult?.message}</p>
                   </div>
                 </div>
 
-                {restoreResult.type === 'success' && onNavigateToConciliation && (
+                {restoreResult?.type === 'success' && onNavigateToConciliation && (
                   <div className="pt-2 border-t border-emerald-200 flex justify-end">
                     <button
                       onClick={onNavigateToConciliation}

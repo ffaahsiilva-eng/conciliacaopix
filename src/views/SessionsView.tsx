@@ -848,7 +848,12 @@ export const SessionsView: React.FC = () => {
                             <span className="font-bold text-slate-900 truncate">{tx.description}</span>
                           </div>
                           <div className="text-[11px] text-slate-500 flex items-center gap-2 flex-wrap">
-                            <span>{tx.bank_name}</span>
+                            <span className="flex items-center gap-1">
+                              {(tx.bank_code === '001' || tx.bank_name?.toLowerCase().includes('brasil')) && (
+                                <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-3 w-3 object-contain shrink-0" />
+                              )}
+                              {tx.bank_name}
+                            </span>
                             {tx.document_number && <span>• Doc: {tx.document_number}</span>}
                             {tx.voucher_number && (
                               <span className="text-blue-700 font-mono font-bold">

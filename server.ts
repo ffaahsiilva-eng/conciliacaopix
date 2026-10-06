@@ -2452,20 +2452,20 @@ app.get('/api/reports/driver-summary', async (req, res) => {
     const companyId = getCompanyId(req);
     const { start_date, end_date, driver_id } = req.query as Record<string, string>;
 
-    const sessionConditions = ["company_id = ?", "status = 'COMPLETED'"];
+    const sessionConditions = ["s.company_id = ?", "s.status = 'COMPLETED'"];
     const sessionParams: any[] = [companyId];
 
     if (driver_id && driver_id !== 'ALL') {
-      sessionConditions.push('driver_id = ?');
+      sessionConditions.push('s.driver_id = ?');
       sessionParams.push(driver_id);
     }
 
     if (start_date && start_date.trim() !== '') {
-      sessionConditions.push('date(COALESCE(completed_at, started_at)) >= date(?)');
+      sessionConditions.push('date(COALESCE(s.completed_at, s.started_at)) >= date(?)');
       sessionParams.push(start_date.trim());
     }
     if (end_date && end_date.trim() !== '') {
-      sessionConditions.push('date(COALESCE(completed_at, started_at)) <= date(?)');
+      sessionConditions.push('date(COALESCE(s.completed_at, s.started_at)) <= date(?)');
       sessionParams.push(end_date.trim());
     }
 
@@ -2478,26 +2478,33 @@ app.get('/api/reports/driver-summary', async (req, res) => {
         d.name as driver_name,
         d.vehicle_plate,
         d.route,
-        COUNT(DISTINCT t.id) as total_pix_reconciled,
-        COALESCE(SUM(t.amount), 0) as total_amount_reconciled,
+        sub.total_pix_reconciled,
+        COALESCE(sub.total_amount_reconciled, 0) as total_amount_reconciled,
         COALESCE(sub.total_missing_amount, 0) as total_missing_amount,
         COALESCE(sub.total_sessions_count, 0) as total_sessions,
-        MIN(t.date) as first_receipt_date,
-        MAX(t.date) as last_receipt_date
+        sub.first_receipt_date,
+        sub.last_receipt_date
       FROM drivers d
       INNER JOIN (
         SELECT 
-          driver_id, 
-          COALESCE(SUM(missing_amount), 0) as total_missing_amount,
-          COUNT(id) as total_sessions_count
-        FROM reconciliation_sessions
+          s.driver_id,
+          SUM(s.missing_amount) as total_missing_amount,
+          COUNT(s.id) as total_sessions_count,
+          SUM(sess_tx.total_pix) as total_pix_reconciled,
+          SUM(sess_tx.total_amount) as total_amount_reconciled,
+          MIN(sess_tx.min_date) as first_receipt_date,
+          MAX(sess_tx.max_date) as last_receipt_date
+        FROM reconciliation_sessions s
+        LEFT JOIN (
+          SELECT session_id, COUNT(id) as total_pix, SUM(amount) as total_amount, MIN(date) as min_date, MAX(date) as max_date
+          FROM transactions 
+          WHERE status = 'RECONCILED'
+          GROUP BY session_id
+        ) sess_tx ON sess_tx.session_id = s.id
         WHERE ${sessionWhere}
-        GROUP BY driver_id
+        GROUP BY s.driver_id
       ) sub ON sub.driver_id = d.id
-      LEFT JOIN reconciliation_sessions s ON s.driver_id = d.id AND s.status = 'COMPLETED'
-      LEFT JOIN transactions t ON t.session_id = s.id AND t.status = 'RECONCILED'
       WHERE d.company_id = ? ${driver_id && driver_id !== 'ALL' ? 'AND d.id = ?' : ''}
-      GROUP BY d.id
       ORDER BY (total_amount_reconciled + total_missing_amount) DESC
     `, driver_id && driver_id !== 'ALL' ? [...sessionParams, companyId, driver_id] : [...sessionParams, companyId]);
 

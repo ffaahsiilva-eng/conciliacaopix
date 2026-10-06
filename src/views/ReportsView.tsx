@@ -32,7 +32,6 @@ export const ReportsView: React.FC = () => {
   const [activeReportTab, setActiveReportTab] = useState<'driver' | 'bank' | 'audit'>('driver');
   const [driverSummary, setDriverSummary] = useState<any[]>([]);
   const [bankSummary, setBankSummary] = useState<any[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [driversList, setDriversList] = useState<Driver[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -47,11 +46,7 @@ export const ReportsView: React.FC = () => {
   const [driverSessions, setDriverSessions] = useState<ReconciliationSession[]>([]);
   const [loadingDriverSessions, setLoadingDriverSessions] = useState(false);
 
-  // Audit Filters
-  const [auditActionFilter, setAuditActionFilter] = useState<string>('ALL');
-  const [auditSearch, setAuditSearch] = useState<string>('');
-  const [auditStartDate, setAuditStartDate] = useState<string>('');
-  const [auditEndDate, setAuditEndDate] = useState<string>('');
+
 
   // Fetch aux drivers for dropdown
   useEffect(() => {
@@ -69,14 +64,6 @@ export const ReportsView: React.FC = () => {
       } else if (activeReportTab === 'bank') {
         const data = await api.getBankSummaryReport();
         setBankSummary(data);
-      } else if (activeReportTab === 'audit') {
-        const data = await api.getAuditLogs({
-          startDate: auditStartDate,
-          endDate: auditEndDate,
-          action: auditActionFilter,
-          search: auditSearch
-        });
-        setAuditLogs(data);
       }
     } catch (err) {
       console.error('Error loading reports:', err);
@@ -92,10 +79,6 @@ export const ReportsView: React.FC = () => {
     startDate,
     endDate,
     selectedDriverId,
-    auditActionFilter,
-    auditStartDate,
-    auditEndDate,
-    auditSearch,
     currentCompany?.id
   ]);
 
@@ -242,36 +225,6 @@ export const ReportsView: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const exportAuditCsv = () => {
-    if (!auditLogs || auditLogs.length === 0) return;
-    const headers = ['Data / Hora', 'Ação', 'Usuário', 'Perfil', 'Detalhes'];
-    const rows = auditLogs.map((l) => [
-      formatDateTime(l.created_at),
-      l.action,
-      `"${l.user_name}"`,
-      l.user_role,
-      `"${(l.details_json || '').replace(/"/g, '""')}"`
-    ]);
-
-    const csvContent = '\uFEFF' + [headers.join(';'), ...rows.map((r) => r.join(';'))].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Trilha_Auditoria_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  // Helper to parse audit details
-  const parseAuditDetails = (detailsJson?: string) => {
-    if (!detailsJson) return null;
-    try {
-      return JSON.parse(detailsJson);
-    } catch {
-      return null;
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -301,18 +254,6 @@ export const ReportsView: React.FC = () => {
             <Building2 className="w-4 h-4" />
             <span>Relatório por Banco</span>
           </button>
-
-          <button
-            onClick={() => setActiveReportTab('audit')}
-            className={`px-3.5 py-2 rounded-lg font-bold flex items-center space-x-2 transition-all cursor-pointer ${
-              activeReportTab === 'audit'
-                ? 'bg-blue-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <ShieldCheck className="w-4 h-4" />
-            <span>Trilha de Auditoria</span>
-          </button>
         </div>
 
         <div className="flex items-center space-x-2">
@@ -335,17 +276,6 @@ export const ReportsView: React.FC = () => {
             >
               <Download className="w-3.5 h-3.5 text-blue-600" />
               <span>Exportar CSV</span>
-            </button>
-          )}
-
-          {activeReportTab === 'audit' && (
-            <button
-              onClick={exportAuditCsv}
-              disabled={auditLogs.length === 0}
-              className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold px-3 py-2 rounded-xl text-xs flex items-center space-x-1.5 transition-colors cursor-pointer disabled:opacity-50"
-            >
-              <Download className="w-3.5 h-3.5 text-blue-600" />
-              <span>Exportar Auditoria (CSV)</span>
             </button>
           )}
 
@@ -787,188 +717,7 @@ export const ReportsView: React.FC = () => {
       {/* ======================================================== */}
       {/* 3. TRILHA DE AUDITORIA COM REGISTRO DE VALORES FALTANTES */}
       {/* ======================================================== */}
-      {activeReportTab === 'audit' && (
-        <div className="space-y-4">
-          {/* Audit Filters Bar */}
-          <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs space-y-3 text-xs">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-              <div className="flex items-center space-x-2">
-                <ShieldCheck className="w-4 h-4 text-blue-600" />
-                <h4 className="font-extrabold text-slate-900 uppercase tracking-wider text-[11px]">
-                  Filtros da Trilha de Auditoria
-                </h4>
-              </div>
 
-              {(auditActionFilter !== 'ALL' || auditStartDate !== '' || auditEndDate !== '' || auditSearch !== '') && (
-                <button
-                  onClick={() => {
-                    setAuditActionFilter('ALL');
-                    setAuditStartDate('');
-                    setAuditEndDate('');
-                    setAuditSearch('');
-                  }}
-                  className="inline-flex items-center space-x-1 text-xs font-bold text-slate-600 hover:text-red-600 bg-slate-100 hover:bg-red-50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Limpar Filtros</span>
-                </button>
-              )}
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                  Tipo de Evento:
-                </label>
-                <select
-                  value={auditActionFilter}
-                  onChange={(e) => setAuditActionFilter(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-900 focus:outline-none focus:border-blue-500 focus:bg-white"
-                >
-                  <option value="ALL">Todos os Eventos</option>
-                  <option value="RECONCILIATION_COMPLETED">Acertos Finalizados (Conciliação)</option>
-                  <option value="RECONCILIATION_REOPENED">Acertos Reabertos</option>
-                  <option value="SESSION_DELETED">Acertos Excluídos</option>
-                  <option value="TRANSACTION_IGNORED">Transações Desconsideradas</option>
-                  <option value="PIX_RETURNED">Devoluções / Estornos de Pix</option>
-                  <option value="BACKUP_RESTORE">Restaurações de Backup</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                  Data Inicial:
-                </label>
-                <input
-                  type="date"
-                  value={auditStartDate}
-                  onChange={(e) => setAuditStartDate(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                  Data Final:
-                </label>
-                <input
-                  type="date"
-                  value={auditEndDate}
-                  onChange={(e) => setAuditEndDate(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                  Buscar no Log (Motorista / Usuário):
-                </label>
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
-                  <input
-                    type="text"
-                    placeholder="Nome, placa, ID..."
-                    value={auditSearch}
-                    onChange={(e) => setAuditSearch(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-8 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
-                  />
-                  {auditSearch && (
-                    <button
-                      onClick={() => setAuditSearch('')}
-                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
-            <div className="p-4 bg-slate-50 border-b border-slate-200 text-xs text-slate-600 flex items-center justify-between">
-              <span className="flex items-center space-x-1.5 font-bold text-slate-800">
-                <ShieldCheck className="w-4 h-4 text-blue-600" />
-                <span>Registros de Auditoria & Alterações</span>
-              </span>
-              <span>{auditLogs.length} eventos listados</span>
-            </div>
-
-            <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
-              <table className="w-full text-left text-xs text-slate-800">
-                <thead className="bg-slate-100 text-slate-700 uppercase font-extrabold text-[10px] tracking-wider border-b border-slate-200 sticky top-0">
-                  <tr>
-                    <th className="py-3.5 px-2">Data / Hora</th>
-                    <th className="py-3.5 px-2">Ação</th>
-                    <th className="py-3.5 px-2">Usuário</th>
-                    <th className="py-3.5 px-2">Perfil</th>
-                    <th className="py-3.5 px-2">Auditoria da Operação & Valores</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {auditLogs.map((log) => {
-                    const parsed = parseAuditDetails(log.details_json);
-                    const isReconciliation = log.action === 'RECONCILIATION_COMPLETED';
-                    const hasMissing = parsed && typeof parsed.missingAmount === 'number' && parsed.missingAmount > 0;
-
-                    return (
-                      <tr key={log.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="py-3 px-2 whitespace-nowrap text-slate-500 font-mono text-[11px]">
-                          {formatDateTime(log.created_at)}
-                        </td>
-                        <td className="py-3 px-2 whitespace-nowrap">
-                          <span className="bg-blue-50 text-blue-800 font-bold px-2 py-0.5 rounded text-[10px] border border-blue-200">
-                            {log.action}
-                          </span>
-                        </td>
-                        <td className="py-3 px-2 font-bold text-slate-900 whitespace-nowrap">
-                          {log.user_name}
-                        </td>
-                        <td className="py-3 px-2 whitespace-nowrap">
-                          <span className="text-[10px] text-slate-500 font-bold">{log.user_role}</span>
-                        </td>
-                        <td className="py-3 px-2 text-slate-700 text-xs">
-                          {isReconciliation && parsed ? (
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-bold text-slate-900">
-                                Motorista: {parsed.driver}
-                              </span>
-                              {parsed.plate && (
-                                <span className="font-mono text-blue-800 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200 text-[10px]">
-                                <span className="flex items-center gap-2">Placa: <LicensePlateBadge plate={parsed.plate} /></span>
-                                </span>
-                              )}
-                              <span className="text-slate-500">
-                                Pix: <strong>{formatCurrency(parsed.totalAmount)}</strong> ({parsed.itemCount} itens)
-                              </span>
-
-                              {/* AUDITORIA DESTACADA: VALOR FALTANTE */}
-                              {hasMissing ? (
-                                <span className="inline-flex items-center gap-1 font-extrabold text-red-700 bg-red-100 border border-red-300 px-2 py-0.5 rounded-full text-[11px]">
-                                  <AlertTriangle className="w-3 h-3 text-red-600" />
-                                  Falta Prestação: {formatCurrency(parsed.missingAmount)}
-                                </span>
-                              ) : (
-                                <span className="text-slate-400 text-[11px]">
-                                  Sem diferença faltante
-                                </span>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="font-mono text-[11px] text-slate-600 truncate max-w-md block">
-                              {log.details_json || '-'}
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ======================================================== */}
       {/* MODAL: ACERTOS INDIVIDUAIS DO MOTORISTA NO PERÍODO       */}

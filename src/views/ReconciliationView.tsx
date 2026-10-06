@@ -37,7 +37,8 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowDownWideNarrow,
-  Pencil
+  Pencil,
+  Menu
 } from 'lucide-react';
 import { LinkReturnModal } from '../components/LinkReturnModal';
 import { TransactionDetailsModal } from '../components/TransactionDetailsModal';
@@ -97,14 +98,17 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
   // Debounce effect for search
   useEffect(() => {
     const handler = setTimeout(() => {
-      setFilters((prev) => ({ ...prev, search: searchInput, page: 1 }));
+      setFilters((prev) => {
+        if (prev.search === searchInput) return prev;
+        return { ...prev, search: searchInput, page: 1 };
+      });
     }, 600);
     return () => clearTimeout(handler);
   }, [searchInput]);
 
-  // Re-fetch transactions whenever current company changes
+  // Reset to page 1 if company changes
   useEffect(() => {
-    setFilters((prev) => ({ ...prev, page: 1 }));
+    setFilters((prev) => prev.page === 1 ? prev : { ...prev, page: 1 });
   }, [currentCompany?.id]);
 
   const [pagination, setPagination] = useState({
@@ -118,6 +122,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
   const [liveNotification, setLiveNotification] = useState<string | null>(null);
 
   // Modals for transaction deletion, ignore, mark return or edit
+  const [openMenuTxId, setOpenMenuTxId] = useState<string | null>(null);
   const [txToDelete, setTxToDelete] = useState<Transaction | null>(null);
   const [selectedForDeletion, setSelectedForDeletion] = useState<string[]>([]);
   const [isDeletingBulk, setIsDeletingBulk] = useState(false);
@@ -151,7 +156,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
 
   useEffect(() => {
     fetchTransactions();
-  }, [filters]);
+  }, [filters, currentCompany?.id]);
 
   useEffect(() => {
     const unsubscribe = subscribeToRealtimeEvents((event) => {
@@ -989,10 +994,17 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
 
                       {/* Bank */}
                       <td className="py-3 px-4 whitespace-nowrap">
-                        <span className="font-bold text-slate-900">{tx.bank_name}</span>
-                        {tx.bank_code && (
-                          <span className="text-[10px] text-slate-500 block">Cód: {tx.bank_code}</span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {(tx.bank_code === '001' || tx.bank_name?.toLowerCase().includes('brasil')) && (
+                            <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-5 w-5 object-contain shrink-0" />
+                          )}
+                          <div>
+                            <span className="font-bold text-slate-900">{tx.bank_name}</span>
+                            {tx.bank_code && (
+                              <span className="text-[10px] text-slate-500 block leading-tight">Cód: {tx.bank_code}</span>
+                            )}
+                          </div>
+                        </div>
                       </td>
 
                       {/* Description & Counterparty (Full un-truncated) */}
@@ -1022,9 +1034,9 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                               ESTORNO / DEVOLUÇÃO TOTAL
                             </span>
                           )}
-                          {tx.returned_amount > 0 && !isReturned && (
+                          {(tx.returned_amount || 0) > 0 && !isReturned && (
                             <span className="bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.5 rounded text-[9px] font-bold mr-1.5 inline-block">
-                              ✂ DEVOLUÇÃO PARCIAL (-{formatCurrency(tx.returned_amount)})
+                              ✂ DEVOLUÇÃO PARCIAL (-{formatCurrency(tx.returned_amount || 0)})
                             </span>
                           )}
                           {isDebit && (
@@ -1071,9 +1083,9 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                           >
                             {tx.type === 'CREDIT' ? '+' : '-'} {formatCurrency(tx.amount)}
                           </span>
-                          {tx.returned_amount > 0 && !isReturned && (
+                          {(tx.returned_amount || 0) > 0 && !isReturned && (
                             <span className="text-[10px] text-slate-400 font-normal font-sans tracking-tight">
-                              Original: {formatCurrency(tx.original_amount || (tx.amount + tx.returned_amount))}
+                              Original: {formatCurrency(tx.original_amount || (tx.amount + (tx.returned_amount || 0)))}
                             </span>
                           )}
                         </div>
@@ -1149,108 +1161,113 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                       </td>
 
                       {/* Action buttons */}
-                      <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-center space-x-1.5 flex-wrap gap-y-1">
-                          {/* If Debit: prominent link return button */}
-                          {isDebit && !isReconciled && (
+                      <td className="py-3 px-4 text-center relative w-16" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenMenuTxId(openMenuTxId === tx.id ? null : tx.id);
+                          }}
+                          className={`p-2 rounded-xl transition-all cursor-pointer ${
+                            openMenuTxId === tx.id ? 'bg-blue-100 text-blue-700' : 'text-slate-400 hover:bg-slate-100 hover:text-slate-700'
+                          }`}
+                          title="Ações"
+                        >
+                          <Menu className="w-5 h-5" />
+                        </button>
+
+                        {openMenuTxId === tx.id && (
+                          <div className="absolute right-full mr-2 top-1/2 -translate-y-1/2 w-48 bg-white border border-slate-200 shadow-2xl rounded-2xl z-50 flex flex-col p-1.5 text-left animate-in fade-in zoom-in duration-200">
+                            <div className="fixed inset-0 z-[-1] cursor-default" onClick={(e) => { e.stopPropagation(); setOpenMenuTxId(null); }} />
+                            
+                            {/* If Debit: prominent link return button */}
+                            {isDebit && !isReconciled && (
+                              <button
+                                type="button"
+                                onClick={() => { setDebitTxForLinking(tx); setOpenMenuTxId(null); }}
+                                className="w-full text-left bg-red-50 hover:bg-red-100 text-red-700 font-bold px-3 py-2 rounded-xl text-xs flex items-center space-x-2 transition-colors cursor-pointer mb-1"
+                              >
+                                <RotateCcw className="w-4 h-4" />
+                                <span>Relacionar Saída</span>
+                              </button>
+                            )}
+
+                            {/* Reopen (Admin only) if Reconciled */}
+                            {isReconciled && canReopen && (
+                              <button
+                                onClick={() => { onOpenReopenModal(tx); setOpenMenuTxId(null); }}
+                                className="w-full text-left text-amber-700 hover:bg-amber-50 px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition-colors cursor-pointer"
+                              >
+                                <LockOpen className="w-4 h-4" />
+                                <span>Reabrir Acerto</span>
+                              </button>
+                            )}
+
+                            {/* View Full Details Button */}
                             <button
                               type="button"
-                              onClick={() => setDebitTxForLinking(tx)}
-                              className="bg-red-50 hover:bg-red-100 text-red-700 border border-red-300 font-bold px-2 py-1 rounded-xl text-xs flex items-center space-x-1 shadow-2xs cursor-pointer whitespace-nowrap"
-                              title="Relacionar esta saída a uma entrada e bloquear a entrada de ser conciliada"
+                              onClick={() => { handleOpenTransactionView(tx, 'DETAILS'); setOpenMenuTxId(null); }}
+                              className="w-full text-left text-slate-700 hover:bg-slate-50 px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition-colors cursor-pointer"
                             >
-                              <RotateCcw className="w-3 h-3 text-red-600" />
-                              <span>Relacionar</span>
+                              <FileText className="w-4 h-4 text-blue-600" />
+                              <span>Ver Comprovante</span>
                             </button>
-                          )}
 
-                          {/* Reopen (Admin only) if Reconciled */}
-                          {isReconciled && canReopen && (
-                            <button
-                              onClick={() => onOpenReopenModal(tx)}
-                              className="text-slate-400 hover:text-amber-600 hover:bg-amber-50 p-1.5 rounded-lg transition-colors cursor-pointer"
-                              title="Reabrir/Desbloquear conciliação (Ação Administrativa)"
-                            >
-                              <LockOpen className="w-4 h-4" />
-                            </button>
-                          )}
+                            {/* Admin only: Edit counterparty name / description */}
+                            {isAdmin && (
+                              <button
+                                type="button"
+                                onClick={() => { handleOpenTransactionView(tx, 'EDIT'); setOpenMenuTxId(null); }}
+                                className="w-full text-left text-slate-700 hover:bg-slate-50 px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition-colors cursor-pointer"
+                              >
+                                <Pencil className="w-4 h-4 text-slate-500" />
+                                <span>Editar Dados</span>
+                              </button>
+                            )}
 
-                          {/* View Full Details Button */}
-                          <button
-                            type="button"
-                            onClick={() => handleOpenTransactionView(tx, 'DETAILS')}
-                            className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 p-1.5 rounded-lg transition-colors cursor-pointer"
-                            title="Ver todos os detalhes e dados brutos deste lançamento"
-                          >
-                            <FileText className="w-4 h-4" />
-                          </button>
+                            {/* Not Reconciled actions */}
+                            {!isReconciled && !isDebit && (
+                              <>
+                                {/* Admin only: Toggle Pix Return */}
+                                {isAdmin && (
+                                  <button
+                                    onClick={() => { setTxToReturn(tx); setOpenMenuTxId(null); }}
+                                    className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition-colors cursor-pointer ${
+                                      isReturned ? 'text-red-700 bg-red-50 hover:bg-red-100' : 'text-slate-700 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    <Undo2 className={`w-4 h-4 ${isReturned ? 'text-red-600' : 'text-slate-500'}`} />
+                                    <span>{isReturned ? 'Remover Devolução' : 'Marcar Estorno'}</span>
+                                  </button>
+                                )}
 
-                          {/* Admin only: Edit counterparty name / description */}
-                          {isAdmin && (
-                            <button
-                              type="button"
-                              onClick={() => handleOpenTransactionView(tx, 'EDIT')}
-                              className="text-slate-400 hover:text-blue-600 hover:bg-blue-50 p-1.5 rounded-lg transition-colors cursor-pointer"
-                              title="Editar descrição ou nome do remetente verificado no banco (Administrador)"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </button>
-                          )}
+                                {/* Admin only: Toggle Ignore (Desconsiderar depósito etc.) */}
+                                {isAdmin && (
+                                  <button
+                                    onClick={() => { setTxToIgnore(tx); setOpenMenuTxId(null); }}
+                                    className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition-colors cursor-pointer ${
+                                      isIgnored ? 'text-slate-800 bg-slate-100 hover:bg-slate-200' : 'text-slate-700 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    {isIgnored ? <Eye className="w-4 h-4 text-slate-600" /> : <EyeOff className="w-4 h-4 text-slate-500" />}
+                                    <span>{isIgnored ? 'Reativar Pix' : 'Desconsiderar Pix'}</span>
+                                  </button>
+                                )}
 
-                          {/* Not Reconciled actions */}
-                          {!isReconciled && !isDebit && (
-                            <>
-                              {/* Admin only: Toggle Pix Return */}
-                              {isAdmin && (
-                                <button
-                                  onClick={() => setTxToReturn(tx)}
-                                  className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                                    isReturned
-                                      ? 'text-red-700 bg-red-100 hover:bg-red-200'
-                                      : 'text-slate-400 hover:text-red-600 hover:bg-red-50'
-                                  }`}
-                                  title={
-                                    isReturned
-                                      ? 'Remover marcação de devolução (Administrador)'
-                                      : 'Marcar como Devolução de Pix (estornado ao cliente) (Administrador)'
-                                  }
-                                >
-                                  <Undo2 className="w-4 h-4" />
-                                </button>
-                              )}
-
-                              {/* Admin only: Toggle Ignore (Desconsiderar depósito etc.) */}
-                              {isAdmin && (
-                                <button
-                                  onClick={() => setTxToIgnore(tx)}
-                                  className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                                    isIgnored
-                                      ? 'text-slate-800 bg-slate-200 hover:bg-slate-300'
-                                      : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
-                                  }`}
-                                  title={
-                                    isIgnored
-                                      ? 'Reativar para conciliação (Administrador)'
-                                      : 'Desconsiderar lançamento (Administrador)'
-                                  }
-                                >
-                                  {isIgnored ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-                                </button>
-                              )}
-
-                              {/* Admin only: Delete single transaction */}
-                              {isAdmin && (
-                                <button
-                                  onClick={() => setTxToDelete(tx)}
-                                  className="text-slate-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors cursor-pointer"
-                                  title="Excluir este lançamento do extrato (Administrador)"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              )}
-                            </>
-                          )}
-                        </div>
+                                {/* Admin only: Delete single transaction */}
+                                {isAdmin && (
+                                  <button
+                                    onClick={() => { setTxToDelete(tx); setOpenMenuTxId(null); }}
+                                    className="w-full text-left text-red-600 hover:bg-red-50 px-3 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition-colors cursor-pointer mt-1 border-t border-slate-100 pt-2"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                    <span>Excluir</span>
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );

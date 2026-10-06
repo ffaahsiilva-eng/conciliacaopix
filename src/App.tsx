@@ -15,6 +15,7 @@ import { DriversView } from './views/DriversView';
 import { SessionsView } from './views/SessionsView';
 import { BatchesView } from './views/BatchesView';
 import { ReportsView } from './views/ReportsView';
+import { LogsView } from './views/LogsView';
 import { UsersView } from './views/UsersView';
 import { BackupView } from './views/BackupView';
 import { BankAccount, Driver, Transaction } from './types';
@@ -25,7 +26,7 @@ import { LoginScreen } from './components/LoginScreen';
 function AppContent() {
   const { currentUser, loading: authLoading } = useAuth();
   const { currentCompany } = useCompany();
-  const [currentTab, setCurrentTab] = useState<'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users' | 'backup'>('conciliation');
+  const [currentTab, setCurrentTab] = useState<'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users' | 'backup' | 'logs'>('conciliation');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [banks, setBanks] = useState<BankAccount[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -253,6 +254,8 @@ function AppContent() {
           )}
 
           {currentTab === 'reports' && <ReportsView />}
+          
+          {currentTab === 'logs' && <LogsView />}
 
           {currentTab === 'backup' && (
             <BackupView onNavigateToConciliation={() => setCurrentTab('conciliation')} />
