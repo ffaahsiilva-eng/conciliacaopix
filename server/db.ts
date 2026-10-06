@@ -155,65 +155,61 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
   return null;
 }
 
+let cloudSqlSavePromise: Promise<void> | null = null;
+
 export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
-  if (isSavingToCloudSql) {
-    pendingSaveBuffer = buffer;
-    return;
-  }
+  const currentPromise = cloudSqlSavePromise || Promise.resolve();
+  
+  const nextPromise = currentPromise.then(async () => {
+    try {
+      // SAFETY SHIELD: Only query length if not already known in memory
+      let existingLen = knownHealthySnapshotLen;
+      if (existingLen === 0) {
+        const checkRes = await safeCloudSqlQuery<{ len: number }>(
+          `SELECT length(data) as len FROM system_snapshots WHERE key = 'main_db'`,
+          undefined,
+          15000
+        );
+        existingLen = Number(checkRes?.rows?.[0]?.len || 0);
+        if (existingLen > 0) knownHealthySnapshotLen = existingLen;
+      }
 
-  isSavingToCloudSql = true;
-  try {
-    // SAFETY SHIELD: Only query length if not already known in memory
-    let existingLen = knownHealthySnapshotLen;
-    if (existingLen === 0) {
-      const checkRes = await safeCloudSqlQuery<{ len: number }>(
-        `SELECT length(data) as len FROM system_snapshots WHERE key = 'main_db'`,
-        undefined,
-        15000
-      );
-      existingLen = Number(checkRes?.rows?.[0]?.len || 0);
-      if (existingLen > 0) knownHealthySnapshotLen = existingLen;
-    }
+      // If an existing database snapshot had substantial data (>500KB base64, ~375KB sqlite)
+      // and the new buffer is an empty blank database (<300KB), REFUSE to overwrite main_db!
+      if (existingLen > 500000 && buffer.length < 300000) {
+        console.error(
+          `[CloudSQL SAFETY SHIELD] BLOCKED overwrite! Cloud SQL has a healthy snapshot of ${existingLen} bytes, but current buffer is only ${buffer.length} bytes. Saving to emergency backup instead of overwriting.`
+        );
+        await safeCloudSqlQuery(
+          `INSERT INTO system_snapshots (key, data, updated_at) 
+           VALUES ('main_db_emergency_backup', $1, NOW()) 
+           ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+          [buffer.toString('base64')],
+          15000
+        );
+        return;
+      }
 
-    // If an existing database snapshot had substantial data (>500KB base64, ~375KB sqlite)
-    // and the new buffer is an empty blank database (<300KB), REFUSE to overwrite main_db!
-    if (existingLen > 500000 && buffer.length < 300000) {
-      console.error(
-        `[CloudSQL SAFETY SHIELD] BLOCKED overwrite! Cloud SQL has a healthy snapshot of ${existingLen} bytes, but current buffer is only ${buffer.length} bytes. Saving to emergency backup instead of overwriting.`
-      );
+      // Ultra-fast gzip compression level 3 (10x faster than level 9 with 99% identical ratio)
+      const compressed = gzipSync(buffer, { level: 3 });
+      const b64 = compressed.toString('base64');
+      knownHealthySnapshotLen = b64.length;
+
+      // Single multi-row UPSERT: save both main_db and main_db_backup in ONE roundtrip!
       await safeCloudSqlQuery(
         `INSERT INTO system_snapshots (key, data, updated_at) 
-         VALUES ('main_db_emergency_backup', $1, NOW()) 
+         VALUES ('main_db', $1, NOW()), ('main_db_backup', $1, NOW()) 
          ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-        [buffer.toString('base64')],
-        15000
+        [b64],
+        20000
       );
-      return;
+    } catch (err: any) {
+      console.warn('[CloudSQL] Warning persisting snapshot to Cloud SQL:', err?.message || err);
     }
+  }).catch(() => {});
 
-    // Ultra-fast gzip compression level 3 (10x faster than level 9 with 99% identical ratio)
-    const compressed = gzipSync(buffer, { level: 3 });
-    const b64 = compressed.toString('base64');
-    knownHealthySnapshotLen = b64.length;
-
-    // Single multi-row UPSERT: save both main_db and main_db_backup in ONE roundtrip!
-    await safeCloudSqlQuery(
-      `INSERT INTO system_snapshots (key, data, updated_at) 
-       VALUES ('main_db', $1, NOW()), ('main_db_backup', $1, NOW()) 
-       ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-      [b64],
-      20000
-    );
-  } catch (err: any) {
-    console.warn('[CloudSQL] Warning persisting snapshot to Cloud SQL:', err?.message || err);
-  } finally {
-    isSavingToCloudSql = false;
-    if (pendingSaveBuffer) {
-      const next = pendingSaveBuffer;
-      pendingSaveBuffer = null;
-      saveSnapshotToCloudSql(next);
-    }
-  }
+  cloudSqlSavePromise = nextPromise;
+  return nextPromise;
 }
 
 export async function getDatabase(): Promise<Database> {

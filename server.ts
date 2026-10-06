@@ -8,7 +8,7 @@ import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import path from 'path';
 import fs from 'fs';
-import { getDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery } from './server/db.js';
+import { getDatabase, persistDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery } from './server/db.js';
 import { parseOfx, isBalanceLine } from './server/parsers/ofxParser.js';
 import { parseCsvStatement } from './server/parsers/csvParser.js';
 
@@ -173,7 +173,7 @@ async function cleanupOrphanLocks() {
        WHERE status = 'PENDING' AND locked_at IS NOT NULL AND locked_at < ?`,
       [thirtyMinsAgo]
     );
-    scheduleSaveDatabase();
+    await persistDatabase();
   } catch (err) {
     console.error('[Cleanup Locks Error]', err);
   }
@@ -215,7 +215,7 @@ async function runSql(sql: string, params: any[] = []): Promise<void> {
   const db = await getDatabase();
   try {
     db.run(sql, params);
-    scheduleSaveDatabase();
+    await persistDatabase();
   } catch (err) {
     console.error('[DB Run Error]', err, 'SQL:', sql);
     throw err;
@@ -925,7 +925,7 @@ app.post('/api/statements/upload', async (req, res) => {
       throw txErr;
     }
 
-    scheduleSaveDatabase();
+    await persistDatabase();
 
     await logAudit(
       'STATEMENT_IMPORTED',
@@ -1972,7 +1972,7 @@ app.post('/api/transactions/lock', async (req, res) => {
       throw innerErr;
     }
 
-    scheduleSaveDatabase();
+    await persistDatabase();
 
     // Auditoria: registrar quando admin toma lock de outro usuário
     if (forcedFrom.length > 0) {
@@ -2063,7 +2063,7 @@ app.post('/api/transactions/unlock', async (req, res) => {
       );
     }
 
-    scheduleSaveDatabase();
+    await persistDatabase();
 
     
     broadcastEvent('TRANSACTIONS_UNLOCKED', {
@@ -2098,7 +2098,7 @@ app.post('/api/transactions/unlock-all-by-user', async (req, res) => {
         `UPDATE transactions SET locked_at = NULL, locked_by_user_id = NULL, locked_by_user_name = NULL, locked_by_session_id = NULL WHERE locked_by_user_id = ? AND company_id = ? AND status = 'PENDING'`,
         [actorUser.id, companyId]
       );
-      scheduleSaveDatabase();
+      await persistDatabase();
       const unlockedIds = locked.map((l: any) => l.id);
       broadcastEvent('TRANSACTIONS_UNLOCKED', { transactionIds: unlockedIds, company_id: companyId });
     }
@@ -2244,7 +2244,7 @@ app.post('/api/reconciliation/cancel-session', async (req, res) => {
       [session_id, companyId]
     );
     
-    scheduleSaveDatabase();
+    await persistDatabase();
 
     await logAudit('SESSION_DELETED', 'SESSION', session_id, actorUser, {
       reason: 'Cancelado pelo usuario',
@@ -2414,7 +2414,7 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
       throw err;
     }
 
-    scheduleSaveDatabase();
+    await persistDatabase();
 
     await logAudit('RECONCILIATION_COMPLETED', 'SESSION', finalSessionId, actorUser, {
       driver: driver.name,
@@ -2589,7 +2589,7 @@ app.delete('/api/reconciliation/sessions/:id', async (req, res) => {
     // Delete session record
     await runSql(`DELETE FROM reconciliation_sessions WHERE id = ?`, [id]);
 
-    scheduleSaveDatabase();
+    await persistDatabase();
 
     await logAudit('SESSION_DELETED', 'SESSION', id, actorUser, {
       driver: session.driver_name,
@@ -2828,7 +2828,7 @@ app.post('/api/database/capitalize', async (req, res) => {
     for (const row of records) {
       db.run("UPDATE audit_logs SET user_name = ? WHERE id = ?", [formatName(row.user_name), row.id]);
     }
-    scheduleSaveDatabase();
+    await persistDatabase();
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2855,7 +2855,7 @@ app.post('/api/database/clean', async (req, res) => {
       db.run(`DELETE FROM drivers WHERE company_id = ?`, [companyId]);
     }
 
-    persistDatabaseSync();
+    await persistDatabase();
 
     if (actorUser) {
       await logAudit('DATABASE_CLEANED', 'SYSTEM', 'company_' + companyId, actorUser, {
@@ -3060,7 +3060,7 @@ app.post('/api/database/restore', async (req, res) => {
       db.run('COMMIT');
 
       // Synchronize immediately to disk and Google Cloud SQL persistent database
-      persistDatabaseSync();
+      await persistDatabase();
 
       try {
         await logAudit('DATABASE_RESTORED', 'SYSTEM', 'full_backup', currentUserInfo, {
@@ -3155,7 +3155,7 @@ async function startServer() {
             `UPDATE transactions SET locked_at = NULL, locked_by_user_id = NULL, locked_by_user_name = NULL, locked_by_session_id = NULL WHERE locked_by_user_id IS NOT NULL AND (locked_at IS NULL OR locked_at < ?) AND status = 'PENDING'`,
             [fiveMinAgo]
           );
-          scheduleSaveDatabase();
+          await persistDatabase();
           const staleIds = stale.map((s: any) => s.id);
           broadcastEvent('TRANSACTIONS_UNLOCKED', { transactionIds: staleIds, company_id: 'all', reason: 'expired' });
           console.log(`[LOCK-CLEANUP] Released ${stale.length} expired lock(s).`);
@@ -3173,3 +3173,6 @@ startServer().catch((err) => {
 
 // Export app for Vercel Serverless Functions
 export default app;
+
+
+
