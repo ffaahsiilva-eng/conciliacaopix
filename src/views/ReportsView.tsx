@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { api, formatCurrency, formatDate, formatDateTime, formatPlate } from '../services/api';
 import { LicensePlateBadge } from '../components/LicensePlateBadge';
 import { AuditLog, Driver, ReconciliationSession } from '../types';
@@ -28,12 +28,13 @@ import {
 } from 'lucide-react';
 
 export const ReportsView: React.FC = () => {
-  const { currentCompany } = useCompany();
+  const { currentCompany, loading: companyLoading } = useCompany();
   const [activeReportTab, setActiveReportTab] = useState<'driver' | 'bank' | 'audit'>('driver');
   const [driverSummary, setDriverSummary] = useState<any[]>([]);
   const [bankSummary, setBankSummary] = useState<any[]>([]);
   const [driversList, setDriversList] = useState<Driver[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Driver Report Filters
   const [startDate, setStartDate] = useState('');
@@ -55,32 +56,37 @@ export const ReportsView: React.FC = () => {
       .catch((err) => console.error('Failed to load drivers for filter:', err));
   }, [currentCompany?.id]);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
+    // Don't load while company context is still initializing
+    if (companyLoading) return;
     try {
       setLoading(true);
+      setLoadError(null);
       if (activeReportTab === 'driver') {
         const data = await api.getDriverSummaryReport(startDate, endDate, selectedDriverId);
-        setDriverSummary(data);
+        setDriverSummary(Array.isArray(data) ? data : []);
       } else if (activeReportTab === 'bank') {
         const data = await api.getBankSummaryReport();
-        setBankSummary(data);
+        setBankSummary(Array.isArray(data) ? data : []);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error loading reports:', err);
+      setLoadError(err?.message || 'Erro ao carregar relatório. Tente novamente.');
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    loadData();
   }, [
     activeReportTab,
     startDate,
     endDate,
     selectedDriverId,
-    currentCompany?.id
+    currentCompany?.id,
+    companyLoading
   ]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   // Date Quick Presets for Driver Report
   const setDatePreset = (preset: 'today' | 'yesterday' | 'last7' | 'last30' | 'thisMonth' | 'clear') => {
@@ -529,12 +535,24 @@ export const ReportsView: React.FC = () => {
 
           {/* Table Container */}
           <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
-            {loading ? (
+            {loading || companyLoading ? (
               <div className="p-12 text-center text-slate-400">
                 <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
                 <p className="text-sm font-semibold text-slate-600">
                   Consolidando dados e apurando valores faltantes por motorista...
                 </p>
+              </div>
+            ) : loadError ? (
+              <div className="p-12 text-center text-red-500 space-y-3">
+                <AlertTriangle className="w-10 h-10 mx-auto" />
+                <p className="text-sm font-bold">{loadError}</p>
+                <button
+                  onClick={loadData}
+                  className="mt-2 inline-flex items-center space-x-1 bg-blue-600 text-white text-xs font-bold px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 mr-1" />
+                  Tentar Novamente
+                </button>
               </div>
             ) : filteredDriverSummary.length === 0 ? (
               <div className="p-12 text-center text-slate-500 space-y-2">
@@ -542,6 +560,13 @@ export const ReportsView: React.FC = () => {
                 <p className="text-sm font-bold text-slate-700">
                   Nenhuma conciliação encontrada para os filtros selecionados.
                 </p>
+                <button
+                  onClick={loadData}
+                  className="mt-2 inline-flex items-center space-x-1 text-xs font-bold text-blue-600 hover:text-blue-800 underline cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3 mr-1" />
+                  Recarregar
+                </button>
               </div>
             ) : (
               <div className="overflow-x-auto">

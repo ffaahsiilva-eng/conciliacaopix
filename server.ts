@@ -2505,7 +2505,7 @@ app.get('/api/reports/driver-summary', async (req, res) => {
         GROUP BY s.driver_id
       ) sub ON sub.driver_id = d.id
       WHERE d.company_id = ? ${driver_id && driver_id !== 'ALL' ? 'AND d.id = ?' : ''}
-      ORDER BY (total_amount_reconciled + total_missing_amount) DESC
+      ORDER BY (COALESCE(sub.total_amount_reconciled, 0) + COALESCE(sub.total_missing_amount, 0)) DESC
     `, driver_id && driver_id !== 'ALL' ? [...sessionParams, companyId, driver_id] : [...sessionParams, companyId]);
 
     res.json(summary);
