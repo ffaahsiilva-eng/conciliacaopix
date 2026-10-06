@@ -1014,7 +1014,8 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                   const isCobranca = tx.description && tx.description.toLowerCase().includes('cobrança');
                   const isDebit = tx.type === 'DEBIT';
                   const isTemporarilyLockedByOther = tx.locked_by_user_id && tx.locked_by_user_id !== currentUser?.id;
-                  const isBlockedFromSelection = isReconciled || isReturned || isIgnored || isDebit || isTemporarilyLockedByOther;
+                  const isLockedByMeInAnotherSession = tx.locked_by_user_id === currentUser?.id && !isSelected;
+                  const isBlockedFromSelection = isReconciled || isReturned || isIgnored || isDebit || isTemporarilyLockedByOther || isLockedByMeInAnotherSession;
 
                   return (
                     <tr
@@ -1048,6 +1049,8 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                           ? 'bg-amber-50/30 hover:bg-amber-50/60 cursor-pointer'
                           : isTemporarilyLockedByOther
                           ? 'bg-slate-50/50 text-slate-500 cursor-not-allowed'
+                          : isLockedByMeInAnotherSession
+                          ? 'bg-blue-50/30 text-slate-600 cursor-pointer'
                           : isSelected
                           ? 'bg-blue-50/90 border-l-4 border-l-blue-600 font-semibold cursor-pointer'
                           : isSessionActive
@@ -1093,6 +1096,14 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                             title={`Em uso: bloqueado temporariamente por ${tx.locked_by_user_name}`}
                           >
                             <Lock className="w-3.5 h-3.5 text-slate-400" />
+                          </div>
+                        ) : isLockedByMeInAnotherSession ? (
+                          <div
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-blue-50 text-blue-500 border border-blue-200 cursor-pointer"
+                            title="Preso por você (selecionado mas desmarcado). Clique para destravar."
+                            onClick={(e) => { e.stopPropagation(); toggleTransaction(tx); }}
+                          >
+                            <Lock className="w-3.5 h-3.5 text-blue-500" />
                           </div>
                         ) : isSessionActive ? (
                           <input
@@ -1306,6 +1317,22 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                               ) : null}
                               <p className="text-slate-600 mt-0.5">
                                 Você não pode marcar este PIX até ser desbloqueado.
+                              </p>
+                            </div>
+                          </div>
+                        ) : isLockedByMeInAnotherSession ? (
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="inline-flex items-center space-x-1 bg-blue-50 text-blue-800 border border-blue-300 px-2 py-0.5 rounded-md text-[11px] font-bold cursor-pointer hover:bg-blue-100 transition-colors"
+                                    onClick={(e) => { e.stopPropagation(); toggleTransaction(tx); }}
+                                    title="Clique para destravar">
+                                <Lock className="w-3 h-3 text-blue-700" />
+                                <span>Bloqueado por você</span>
+                              </span>
+                            </div>
+                            <div className="bg-blue-50/50 border border-blue-200 rounded-md px-2 py-1 text-[10px] leading-tight">
+                              <p className="text-slate-600">
+                                Você travou este PIX (mas ele não está selecionado). Clique no cadeado azul à esquerda para destravar.
                               </p>
                             </div>
                           </div>
