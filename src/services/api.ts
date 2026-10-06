@@ -133,7 +133,7 @@ const customFetch = async (url: RequestInfo | URL, init?: RequestInit): Promise<
 
   // Bypass browser cache for GET requests
   let fetchUrl = typeof url === 'string' ? url : url.toString();
-  
+
   // Use VITE_API_URL if available and the request is to the API
   const baseUrl = import.meta.env.VITE_API_URL || '';
   if (fetchUrl.startsWith('/api') && baseUrl) {
@@ -143,8 +143,18 @@ const customFetch = async (url: RequestInfo | URL, init?: RequestInit): Promise<
   const method = init?.method || 'GET';
   if (method.toUpperCase() === 'GET') {
     const separator = fetchUrl.includes('?') ? '&' : '?';
-    fetchUrl += `${separator}_t=${Date.now()}`;
+    fetchUrl += `${separator}_t=${Date.now()}_r=${Math.random().toString(36).slice(2)}`;
   }
+
+  // Reforça no-cache em todas as chamadas para impedir que o navegador reuse
+  // respostas antigas de login/logout. O servidor Express já envia
+  // `Cache-Control: no-store` para /api, mas isso evita cache no client.
+  const finalInit: RequestInit = {
+    ...init,
+    headers,
+    cache: 'no-store',
+    credentials: init?.credentials || 'same-origin'
+  };
 
   const controller = new AbortController();
   // 10s Timeout defined for performance & infinite loading resolution
@@ -152,7 +162,7 @@ const customFetch = async (url: RequestInfo | URL, init?: RequestInit): Promise<
 
   try {
     const signal = init?.signal || controller.signal;
-    const response = await fetch(fetchUrl, { ...init, headers, signal });
+    const response = await fetch(fetchUrl, { ...finalInit, signal });
     clearTimeout(timeoutId);
     return response;
   } catch (err: any) {
@@ -534,7 +544,21 @@ export const api = {
       })
     });
     const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Falha ao bloquear transações.');
+    if (!res.ok) {
+      // Anexa o payload completo do erro para que a UI possa extrair
+      // nome do bloqueador, descrição, valor, timestamp etc.
+      const err: any = new Error(json.error || 'Falha ao bloquear transações.');
+      err.code = res.status;
+      err.lockedByUserName = json.lockedByUserName;
+      err.lockedByUserId = json.lockedByUserId;
+      err.lockedAt = json.lockedAt;
+      err.driverName = json.driverName;
+      err.description = json.description;
+      err.amount = json.amount;
+      err.transactionId = json.transactionId;
+      err.action = action;
+      throw err;
+    }
     return json;
   },
 

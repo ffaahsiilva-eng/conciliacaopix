@@ -1872,52 +1872,79 @@ app.post('/api/transactions/lock', async (req, res) => {
 
     const db = await getDatabase();
     const nowIso = new Date().toISOString();
-    
-    // 1. Check if any is already locked by someone else or reconciled
-    const placeholders = transaction_ids.map(() => '?').join(',');
-    const checkStmt = db.prepare(
-      `SELECT id, status, locked_by_user_id, locked_by_user_name, locked_by_session_id, description, amount, driver_name 
-       FROM transactions WHERE id IN (${placeholders}) AND company_id = ?`
-    );
-    checkStmt.bind([...transaction_ids, companyId]);
-    const existing: any[] = [];
-    while (checkStmt.step()) {
-      existing.push(checkStmt.getAsObject());
-    }
-    checkStmt.free();
-
-    // Validate
     const forceAdmin = actorUser.role === 'ADMIN' && req.body.force === true;
     const forcedFrom: { id: string; previousUserId: string | null; previousUserName: string | null }[] = [];
-    for (const tx of existing) {
-      if (tx.status === 'RECONCILED' || tx.status === 'IGNORED' || tx.status === 'RETURNED') {
-        const translatedStatus = tx.status === 'RECONCILED' ? 'CONCILIADO' : (tx.status === 'IGNORED' ? 'DESCONSIDERADO' : 'ESTORNADO');
-        return res.status(409).json({ error: `Transação "${tx.description}" já foi processada (Status: ${translatedStatus}).` });
-      }
-      if (tx.locked_by_user_id && tx.locked_by_user_id !== actorUser.id) {
-        if (!forceAdmin) {
-          return res.status(409).json({ error: `Transação "${tx.description}" (R$ ${Number(tx.amount).toFixed(2)}) já está sendo concilada por ${tx.locked_by_user_name}.` });
-        }
-        // Admin força desbloqueio — registra para auditoria
-        forcedFrom.push({
-          id: tx.id,
-          previousUserId: tx.locked_by_user_id,
-          previousUserName: tx.locked_by_user_name
-        });
-      }
-    }
 
-    // 2. Lock them
-    for (const id of transaction_ids) {
-      db.run(
-        `UPDATE transactions SET
-          locked_at = ?,
-          locked_by_user_id = ?,
-          locked_by_user_name = ?,
-          locked_by_session_id = ?
-         WHERE id = ? AND company_id = ? AND status = 'PENDING'`,
-        [nowIso, actorUser.id, actorUser.name, session_id || null, id, companyId]
+    // Atomicidade: BEGIN IMMEDIATE → check + update → COMMIT.
+    // Garante que dois operadores clicando ao mesmo tempo no mesmo PIX não
+    // consigam ambos obter o lock (race condition entre check e update).
+    db.run('BEGIN IMMEDIATE');
+    let txRolledBack = false;
+    const rollback = () => { if (!txRolledBack) { try { db.run('ROLLBACK'); } catch (_) {} txRolledBack = true; } };
+    try {
+      // 1. Check if any is already locked by someone else or reconciled
+      const placeholders = transaction_ids.map(() => '?').join(',');
+      const checkStmt = db.prepare(
+        `SELECT id, status, locked_by_user_id, locked_by_user_name, locked_at, locked_by_session_id, description, amount, driver_name
+         FROM transactions WHERE id IN (${placeholders}) AND company_id = ?`
       );
+      checkStmt.bind([...transaction_ids, companyId]);
+      const existing: any[] = [];
+      while (checkStmt.step()) {
+        existing.push(checkStmt.getAsObject());
+      }
+      checkStmt.free();
+
+      for (const tx of existing) {
+        if (tx.status === 'RECONCILED' || tx.status === 'IGNORED' || tx.status === 'RETURNED') {
+          const translatedStatus = tx.status === 'RECONCILED' ? 'CONCILIADO' : (tx.status === 'IGNORED' ? 'DESCONSIDERADO' : 'ESTORNADO');
+          rollback();
+          return res.status(409).json({
+            error: `Transação "${tx.description}" já foi processada (Status: ${translatedStatus}).`,
+            blockedByUserName: null,
+            status: tx.status
+          });
+        }
+        if (tx.locked_by_user_id && tx.locked_by_user_id !== actorUser.id) {
+          if (!forceAdmin) {
+            rollback();
+            return res.status(409).json({
+              error: `Transação "${tx.description}" (R$ ${Number(tx.amount).toFixed(2)}) já está sendo ${req.body.action === 'EDIT' ? 'editada' : req.body.action === 'DETAILS' ? 'visualizada' : 'conciliada'} por ${tx.locked_by_user_name}.`,
+              lockedByUserName: tx.locked_by_user_name,
+              lockedByUserId: tx.locked_by_user_id,
+              lockedAt: tx.locked_at,
+              driverName: tx.driver_name,
+              description: tx.description,
+              amount: Number(tx.amount),
+              transactionId: tx.id
+            });
+          }
+          forcedFrom.push({
+            id: tx.id,
+            previousUserId: tx.locked_by_user_id,
+            previousUserName: tx.locked_by_user_name
+          });
+        }
+      }
+
+      // 2. Lock them
+      for (const id of transaction_ids) {
+        db.run(
+          `UPDATE transactions SET
+            locked_at = ?,
+            locked_by_user_id = ?,
+            locked_by_user_name = ?,
+            locked_by_session_id = ?
+           WHERE id = ? AND company_id = ? AND status = 'PENDING'`,
+          [nowIso, actorUser.id, actorUser.name, session_id || null, id, companyId]
+        );
+      }
+
+      db.run('COMMIT');
+      txRolledBack = true; // evita rollback duplicado
+    } catch (innerErr) {
+      rollback();
+      throw innerErr;
     }
 
     scheduleSaveDatabase();
@@ -1958,7 +1985,7 @@ app.post('/api/transactions/lock', async (req, res) => {
     }
 
     // Get driver name from the first transaction if available
-    const driverName = existing.length > 0 && existing[0].driver_name ? existing[0].driver_name : null;
+    const driverName = details.length > 0 && details[0].driver_name ? details[0].driver_name : null;
 
     broadcastEvent('TRANSACTIONS_LOCKED', {
       transactionIds: transaction_ids,

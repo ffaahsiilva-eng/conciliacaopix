@@ -122,6 +122,27 @@ export const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = (
           </button>
         </div>
 
+        {/* Banner em tempo real: se outro usuário tomou o lock enquanto este
+            modal está aberto, mostra alerta vermelho e atualiza ao vivo. */}
+        {transaction.locked_by_user_id &&
+          transaction.locked_by_user_id !== currentUser?.id ? (
+          <div className="bg-red-600 text-white px-6 py-3 flex items-center gap-3 border-b border-red-700 shrink-0 animate-pulse-slow">
+            <Lock className="w-5 h-5 shrink-0" />
+            <div className="flex-1 text-sm">
+              <p className="font-bold">
+                ⚠️ Travado em tempo real por {transaction.locked_by_user_name}
+              </p>
+              <p className="text-xs text-red-100">
+                Este PIX/Cobrança está sendo usado por outro operador
+                {transaction.locked_at
+                  ? ` desde ${new Date(transaction.locked_at).toLocaleString('pt-BR')}`
+                  : ''}
+                . As alterações que você fizer aqui podem ser sobrescritas.
+              </p>
+            </div>
+          </div>
+        ) : null}
+
         {/* Content */}
         <div className="p-6 space-y-4 text-xs overflow-y-auto flex-1">
           {actionMsg && (

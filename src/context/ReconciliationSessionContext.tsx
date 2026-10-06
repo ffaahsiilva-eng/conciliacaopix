@@ -121,18 +121,7 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
         setSelectedTxIds((prev) => [...prev, tx.id]);
         setSelectedTransactionsMap((prevMap) => ({ ...prevMap, [tx.id]: tx }));
       } catch (err: any) {
-        const detail = extractBlockDetail(err, tx);
-        if (detail) {
-          showDetailedBlock({
-            blockedByUserName: detail.userName,
-            description: tx.description,
-            amount: tx.amount,
-            lockedAt: detail.lockedAt,
-            transactionId: tx.id
-          });
-        } else {
-          showBlockMessage(err.message || 'Não foi possível bloquear a transação.');
-        }
+        showDetailedBlockFromError(err, tx);
       }
     } else {
       if (currentUser) {
@@ -172,17 +161,36 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
       });
       setSelectedTransactionsMap((prev) => ({ ...prev, ...newMap }));
     } catch (err: any) {
-      const detail = extractBlockDetail(err, allowed[0]);
+      showDetailedBlockFromError(err, allowed[0]);
+    }
+  };
+
+  /**
+   * Constrói o payload para o BlockDetailedModal a partir do erro estruturado
+   * do servidor (que agora traz nome/descrição/valor do bloqueador) ou
+   * cai de volta para extração via regex.
+   */
+  const showDetailedBlockFromError = (err: any, tx: Transaction) => {
+    if (err?.lockedByUserName) {
+      showDetailedBlock({
+        blockedByUserName: err.lockedByUserName,
+        description: err.description ?? tx.description,
+        amount: err.amount ?? tx.amount,
+        lockedAt: err.lockedAt ?? tx.locked_at,
+        transactionId: err.transactionId ?? tx.id
+      });
+    } else {
+      const detail = extractBlockDetail(err, tx);
       if (detail) {
         showDetailedBlock({
           blockedByUserName: detail.userName,
-          description: allowed[0].description,
-          amount: allowed[0].amount,
+          description: tx.description,
+          amount: tx.amount,
           lockedAt: detail.lockedAt,
-          transactionId: allowed[0].id
+          transactionId: tx.id
         });
       } else {
-        showBlockMessage(err.message || 'Erro ao tentar bloquear as transações.');
+        showBlockMessage(err.message || 'Não foi possível bloquear a transação.');
       }
     }
   };

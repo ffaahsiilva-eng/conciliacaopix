@@ -69,7 +69,8 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
     selectedTxIds,
     toggleTransaction,
     selectMultiple,
-    showBlockMessage
+    showBlockMessage,
+    showDetailedBlock
   } = useReconciliationSession();
 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -254,12 +255,24 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
       if (type === 'DETAILS') setSelectedTxForDetails(tx);
       if (type === 'EDIT') setTxToEdit(tx);
     } catch (err: any) {
-      // Mostrar modal detalhado informando quem está usando o item
-      const raw = err?.message || '';
-      const match = raw.match(/por\s+([^.\n]+?)\.?\s*$/i);
-      const userName = match ? match[1].trim() : (tx.locked_by_user_name || 'outro usuário');
-      const verb = type === 'DETAILS' ? 'visualizado' : 'editado';
-      showBlockMessage(`Este PIX está sendo ${verb} por ${userName}.`);
+      // Se o servidor retornou info estruturada do bloqueador, abre o modal
+      // detalhado com banner vermelho + admin tools (se for admin).
+      if (err?.lockedByUserName) {
+        showDetailedBlock({
+          blockedByUserName: err.lockedByUserName,
+          description: err.description ?? tx.description,
+          amount: err.amount ?? tx.amount,
+          lockedAt: err.lockedAt ?? tx.locked_at,
+          transactionId: err.transactionId ?? tx.id
+        });
+      } else {
+        // Fallback para extração via regex
+        const raw = err?.message || '';
+        const match = raw.match(/por\s+([^.\n]+?)\.?\s*$/i);
+        const userName = match ? match[1].trim() : (tx.locked_by_user_name || 'outro usuário');
+        const verb = type === 'DETAILS' ? 'visualizado' : 'editado';
+        showBlockMessage(`Este PIX está sendo ${verb} por ${userName}.`);
+      }
     }
   };
 

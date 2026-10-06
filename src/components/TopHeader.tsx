@@ -99,8 +99,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     <>
       <header className="fluent-topbar">
         <div className="flex items-center gap-3">
-          <button 
-            onClick={toggleSidebar} 
+          <button
+            onClick={toggleSidebar}
             className="text-slate-500 hover:text-slate-700 hover:bg-slate-100 p-2 rounded-lg cursor-pointer transition-colors"
             title="Mostrar/Esconder Menu"
           >
@@ -145,23 +145,49 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           <div className="relative">
             <button
               onClick={() => setUserDropdownOpen(!userDropdownOpen)}
-              className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl cursor-pointer shadow-sm transition-all"
-              style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px' }}
+              className="bg-white border-2 border-blue-300 hover:border-blue-500 hover:bg-blue-50 rounded-xl cursor-pointer shadow-sm transition-all"
+              style={{ padding: '6px 10px 6px 6px', display: 'flex', alignItems: 'center', gap: '8px' }}
+              title={`Logado como: ${currentUser?.name} (${currentUser?.email})`}
             >
-              <div className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs">
+              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-600 to-blue-800 text-white flex items-center justify-center font-bold text-xs shrink-0">
                 {currentUser?.name?.charAt(0) || 'U'}
               </div>
-              <ChevronDown className="w-3.5 h-3.5" />
+              <div className="hidden md:flex flex-col items-start leading-none gap-0.5">
+                <span className="text-xs font-bold text-slate-900 truncate max-w-[140px]">
+                  {currentUser?.name || 'Usuário'}
+                </span>
+                <span className="text-[10px] text-slate-500 truncate max-w-[140px]">
+                  {currentUser?.email}
+                </span>
+              </div>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
             </button>
 
             {userDropdownOpen && (
               <div className="absolute right-0 mt-2 w-72 bg-white border border-slate-200 rounded-2xl shadow-xl py-2 z-50 text-slate-700 animate-fade-in" style={{zIndex: 50}}>
-                <div className="px-4 py-3 border-b border-slate-100">
-                  <p className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                <div className="px-4 py-3 border-b border-slate-100 bg-gradient-to-br from-blue-50 to-slate-50">
+                  <p className="text-[10px] uppercase font-bold tracking-wider text-blue-700 flex items-center gap-1">
+                    <UserCheck className="w-3 h-3" />
                     Sessão Autenticada
                   </p>
-                  <p className="text-sm font-bold text-slate-900 mt-0.5">{currentUser?.name}</p>
-                  <p className="text-xs text-slate-500 truncate">{currentUser?.email}</p>
+                  <p className="text-sm font-extrabold text-slate-900 mt-1">{currentUser?.name}</p>
+                  <p className="text-xs text-slate-600 truncate">{currentUser?.email}</p>
+                  <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${
+                      currentUser?.role === 'ADMIN'
+                        ? 'bg-purple-100 text-purple-800'
+                        : currentUser?.role === 'OPERATOR'
+                        ? 'bg-blue-100 text-blue-800'
+                        : 'bg-slate-200 text-slate-800'
+                    }`}>
+                      {currentUser?.role}
+                    </span>
+                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${
+                      isMatriz ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                    }`}>
+                      {currentCompany.name}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="p-2 space-y-1">

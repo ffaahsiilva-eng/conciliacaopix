@@ -29,27 +29,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const data = await api.getUsers();
       setUsers(data);
-
-      try {
-        const me = await api.getMe();
-        const fresh = data.find((u) => u.id === me.id && u.active === 1);
-        if (fresh) {
-          setCurrentUser(fresh);
-        } else {
-          setCurrentUser(null);
-        }
-      } catch {
-        setCurrentUser(null);
-      }
     } catch (err) {
       console.error('Failed to load users:', err);
-    } finally {
-      setLoading(false);
+    }
+  };
+
+  /**
+   * Carrega o usuário autenticado exclusivamente do cookie HttpOnly do servidor.
+   * Se o cookie não existir ou estiver inválido, currentUser fica null.
+   * Esta função é a única fonte de verdade para "quem está logado".
+   */
+  const fetchMe = async (): Promise<User | null> => {
+    try {
+      const me = await api.getMe();
+      if (me && (me as any).active === 1) {
+        setCurrentUser(me);
+        return me;
+      }
+      setCurrentUser(null);
+      return null;
+    } catch {
+      setCurrentUser(null);
+      return null;
     }
   };
 
   useEffect(() => {
-    fetchUsers();
+    // Hidratação: SEMPRE consulta o servidor sobre quem está logado.
+    // Não usa cache local (localStorage/sessionStorage) — o cookie HttpOnly
+    // é a única fonte de verdade, isolado por navegador/aba.
+    (async () => {
+      try {
+        await fetchUsers();
+        await fetchMe();
+      } finally {
+        setLoading(false);
+      }
+    })();
 
     // Listen for user changes in real-time
     const unsubscribe = subscribeToRealtimeEvents((event) => {
@@ -64,9 +80,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (emailOrId: string, password: string): Promise<User> => {
     const res = await api.login(emailOrId, password);
     setCurrentUser(res.user);
-    // Cleanup de possíveis resquícios antigos no localStorage do usuário
-    localStorage.removeItem('conciliapix_auth_user');
-    sessionStorage.removeItem('conciliapix_auth_user');
+    // Limpa qualquer cache de identidade antiga que possa ter ficado
+    // de uma versão anterior do app.
+    try { localStorage.clear(); } catch {}
+    try { sessionStorage.clear(); } catch {}
     return res.user;
   };
 
@@ -77,8 +94,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.error(err);
     }
     setCurrentUser(null);
-    localStorage.removeItem('conciliapix_auth_user');
-    sessionStorage.removeItem('conciliapix_auth_user');
+    try { localStorage.clear(); } catch {}
+    try { sessionStorage.clear(); } catch {}
   };
 
   const changePassword = async (userId: string, currentPassword: string | undefined, newPassword: string) => {

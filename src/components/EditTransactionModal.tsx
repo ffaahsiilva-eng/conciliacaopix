@@ -13,7 +13,8 @@ import {
   CheckCircle2,
   ShieldCheck,
   Hash,
-  Sparkles
+  Sparkles,
+  Lock
 } from 'lucide-react';
 
 interface EditTransactionModalProps {
@@ -56,6 +57,18 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
       return;
     }
     if (!currentUser) return;
+
+    // Bloqueio de segurança: se outro usuário tomou o lock enquanto
+    // este modal está aberto, recusa o submit em tempo real.
+    if (
+      transaction.locked_by_user_id &&
+      transaction.locked_by_user_id !== currentUser.id
+    ) {
+      setErrorMsg(
+        `Não é possível salvar: este lançamento foi tomado por ${transaction.locked_by_user_name} em ${transaction.locked_at ? new Date(transaction.locked_at).toLocaleString('pt-BR') : 'agora'}.`
+      );
+      return;
+    }
 
     try {
       setSubmitting(true);
@@ -110,6 +123,27 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Banner em tempo real: se outro usuário tomou o lock enquanto este
+            modal está aberto, exibe alerta vermelho e bloqueia o submit. */}
+        {transaction.locked_by_user_id &&
+          transaction.locked_by_user_id !== currentUser?.id ? (
+          <div className="bg-red-600 text-white px-6 py-3 flex items-center gap-3 border-b border-red-700 shrink-0 animate-pulse-slow">
+            <Lock className="w-5 h-5 shrink-0" />
+            <div className="flex-1 text-sm">
+              <p className="font-bold">
+                ⚠️ Travado em tempo real por {transaction.locked_by_user_name}
+              </p>
+              <p className="text-xs text-red-100">
+                Outra pessoa está editando este lançamento
+                {transaction.locked_at
+                  ? ` desde ${new Date(transaction.locked_at).toLocaleString('pt-BR')}`
+                  : ''}
+                . Suas alterações podem ser sobrescritas.
+              </p>
+            </div>
+          </div>
+        ) : null}
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4 text-xs overflow-y-auto flex-1">
