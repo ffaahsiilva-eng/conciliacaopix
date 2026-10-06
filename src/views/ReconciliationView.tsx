@@ -1344,7 +1344,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                         </button>
 
                         {openMenuTxId === tx.id && (
-                          <div className="absolute right-full mr-2 top-1/2 -translate-y-1/2 w-48 bg-white border border-slate-200 shadow-2xl rounded-2xl z-50 flex flex-col p-1.5 text-left animate-in fade-in zoom-in duration-200">
+                          <div className="absolute right-full mr-2 top-1/2 -translate-y-1/2 w-48 bg-white border border-slate-200 shadow-2xl rounded-2xl z-50 flex flex-col p-1.5 text-left animate-in fade-in zoom-in">
                             <div className="fixed inset-0 z-[-1] cursor-default" onClick={(e) => { e.stopPropagation(); setOpenMenuTxId(null); }} />
                             
                             {/* If Debit: prominent link return button */}

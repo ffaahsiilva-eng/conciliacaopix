@@ -53,10 +53,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
     ...(currentUser?.role === 'ADMIN' ? [{ id: 'users' as const, label: 'Controle de Usuários', description: 'Níveis de permissão', icon: Users }] : [])
   ];
 
-  if (isCollapsed) return null; // In this Fluent Design we keep it simple for now, or just don't collapse.
-
+  // On desktop we never collapse it, on mobile it is controlled by isCollapsed
   return (
-    <aside className="fluent-sidebar">
+    <>
+      {/* Mobile backdrop */}
+      {!isCollapsed && (
+        <div 
+          className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[200] md:hidden"
+          onClick={() => setIsCollapsed(true)}
+        />
+      )}
+      <aside className={`fluent-sidebar z-[210] ${isCollapsed ? '-translate-x-full md:translate-x-0 hidden md:flex' : 'translate-x-0 flex'}`}>
       <div className="fluent-brand" style={{ gap: '2px', marginLeft: '-4px' }}>
         <div className="fluent-brand-icon" style={{ background: 'transparent', width: '48px', height: '48px', padding: 0 }}>
           <img src="/caminhaoagua.png" alt="Logo" className="w-full h-full object-contain" />
@@ -124,5 +131,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
     </aside>
+    </>
   );
 };

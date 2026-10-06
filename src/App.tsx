@@ -28,7 +28,7 @@ function AppContent() {
   const { currentUser, loading: authLoading } = useAuth();
   const { currentCompany } = useCompany();
   const [currentTab, setCurrentTab] = useState<'conciliation' | 'drivers' | 'sessions' | 'batches' | 'reports' | 'users' | 'backup' | 'logs'>('conciliation');
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(window.innerWidth < 768);
   const [banks, setBanks] = useState<BankAccount[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   
