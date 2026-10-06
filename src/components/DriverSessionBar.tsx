@@ -35,7 +35,7 @@ export const DriverSessionBar: React.FC<DriverSessionBarProps> = ({ onOpenFinish
   }
 
   return (
-    <div className="bg-gradient-to-r from-blue-50 via-white to-blue-50/70 border-b border-blue-200 shadow-sm sticky top-14 z-20 transition-all">
+    <div className="bg-gradient-to-r from-blue-50 via-white to-blue-50/70 border-b border-blue-200 shadow-sm sticky top-0 z-20 transition-all">
       <div className="max-w-7xl mx-auto px-4 py-3 sm:px-6 lg:px-8">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           {/* Left: Driver info & state */}

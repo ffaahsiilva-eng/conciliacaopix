@@ -60,7 +60,8 @@
 .fluent-layout {
   background: var(--win-bg) linear-gradient(135deg, #e3eefc 0%, #f3f6fa 100%);
   color: var(--text-main);
-  height: 100vh;
+  height: 100vh; /* fallback */
+  height: 100dvh;
   display: flex;
   overflow: hidden;
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
@@ -220,6 +221,24 @@
 
 /* ======== RESPONSIVENESS ======== */
 @media (max-width: 768px) {
+  html, body {
+    height: auto;
+    overflow: visible;
+  }
+  .fluent-layout {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+    display: flex;
+    flex-direction: column;
+  }
+  .fluent-main-content {
+    overflow: visible;
+  }
+  .fluent-main-content > main {
+    overflow: visible !important;
+    height: auto !important;
+  }
   .fluent-sidebar {
     position: fixed;
     top: 0;
