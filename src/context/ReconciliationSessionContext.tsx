@@ -158,13 +158,7 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
     setVoucherNumbers((prev) => ({ ...prev, [txId]: voucher }));
   };
 
-  const cancelSession = async () => {
-    if (selectedTxIds.length > 0 && currentUser) {
-      api.unlockTransactions(selectedTxIds, currentUser).catch(console.error);
-    }
-    if (activeSessionId && currentUser) {
-      api.cancelReconciliationSession(activeSessionId, currentUser).catch(console.error);
-    }
+  const clearSessionState = () => {
     setActiveDriver(null);
     setActiveSessionId(null);
     setSelectedTxIds([]);
@@ -173,6 +167,16 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
     setGeneralVoucher('');
     setSessionNotes('');
     setMissingAmount(0);
+  };
+
+  const cancelSession = async () => {
+    if (selectedTxIds.length > 0 && currentUser) {
+      api.unlockTransactions(selectedTxIds, currentUser).catch(console.error);
+    }
+    if (activeSessionId && currentUser) {
+      api.cancelReconciliationSession(activeSessionId, currentUser).catch(console.error);
+    }
+    clearSessionState();
   };
 
   const finishSession = async () => {
@@ -193,7 +197,7 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
       });
 
       // Clear session so operator can start next driver reconciliation
-      cancelSession();
+      clearSessionState();
       return res;
     } finally {
       setIsSubmitting(false);
