@@ -1023,11 +1023,13 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                       onClick={() => {
                         if (isTemporarilyLockedByOther) {
                           // Mostrar modal detalhado informando quem está usando o item
-                          showBlockMessage(
-                            `Este PIX está em uso por ${tx.locked_by_user_name}${
-                              tx.locked_at ? ` desde ${formatDateTime(tx.locked_at)}` : ''
-                            }. Você não pode marcá-lo até ser desbloqueado.`
-                          );
+                          showDetailedBlock({
+                            blockedByUserName: tx.locked_by_user_name || 'Desconhecido',
+                            description: tx.description,
+                            amount: tx.amount,
+                            lockedAt: tx.locked_at,
+                            transactionId: tx.id
+                          });
                           return;
                         }
                         if (isSessionActive && !isBlockedFromSelection) {
