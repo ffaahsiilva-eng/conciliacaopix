@@ -123,9 +123,18 @@ export function setLastSeenDataVersion(version: number): void {
   lastSeenReconciliationDataVersion = version;
 }
 
+// Estado da conexão SSE, usado para backoff progressivo na reconexão.
+let sseReconnectAttempt = 0;
+let sseWasDisconnected = false;
+
 function connectSse() {
   try {
     eventSource = new EventSource('/api/events');
+
+    eventSource.onopen = () => {
+      sseReconnectAttempt = 0;
+      sseWasDisconnected = false;
+    };
 
     eventSource.onmessage = (e) => {
       try {
@@ -137,12 +146,24 @@ function connectSse() {
     };
 
     eventSource.onerror = () => {
+      const wasConnected = sseWasDisconnected;
+      sseWasDisconnected = true;
+
       if (eventSource) {
         eventSource.close();
         eventSource = null;
       }
-      // Reconnect after 3s
-      setTimeout(connectSse, 3000);
+
+      // Backoff exponencial com teto de 15s e jitter. Um retry fixo de 3s
+      // gerava rajada de reconexões quando o servidor estava sob carga, e a
+      // falta de sinalização fazia a tela ficar desatualizada durante a falha.
+      if (wasConnected) {
+        sseReconnectAttempt = Math.min(sseReconnectAttempt + 1, 5);
+      }
+      const baseDelay = Math.min(1000 * 2 ** sseReconnectAttempt, 15000);
+      const delay = baseDelay + Math.random() * 500;
+
+      setTimeout(connectSse, delay);
     };
   } catch (err) {
     console.error('SSE initialization error:', err);

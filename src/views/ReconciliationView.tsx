@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Transaction, BankAccount, Driver, TransactionFilters, TransactionStats } from '../types';
 import { api, formatCurrency, formatDate, formatDateTime, formatPlate, subscribeToRealtimeEvents, getLocalDataChangeVersion, getLastSeenDataVersion, setLastSeenDataVersion } from '../services/api';
 import { LicensePlateBadge } from '../components/LicensePlateBadge';
@@ -157,6 +157,13 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
     }
   };
 
+  // Mantém sempre a função mais recente para o polling e para os efeitos de
+  // montagem, que rodam uma única vez e portanto não podem listar
+  // `filters` como dependência (isso dispararia o polling a cada mudança de
+  // filtro). A atribuição acontece durante o render, antes dos efeitos.
+  const fetchTransactionsRef = useRef(fetchTransactions);
+  fetchTransactionsRef.current = fetchTransactions;
+
   useEffect(() => {
     fetchTransactions();
   }, [filters, currentCompany?.id]);
@@ -179,9 +186,47 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
     setLastSeenDataVersion(currentVersion);
 
     if (currentVersion !== previousVersion) {
-      fetchTransactions(true);
+      fetchTransactionsRef.current(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Rede de segurança: refetch periódico enquanto a tela está visível.
+  //
+  // O SSE e o contador local cobrem o caminho normal, mas existe uma janela em
+  // que uma ação pode acontecer sem nenhum dos dois: outro operador exclui um
+  // acerto no exato momento em que esta aba reconecta o SSE, ou a conexão cai
+  // durante a operação. Nesses casos a lista ficava mostrando lançamentos já
+  // reabertos como se ainda fossem bloqueados, só corrigindo ao clicar no botão
+  // de atualizar ou recarregar a página.
+  //
+  // 8s é uma folga: o endpoint medido responde em ~35ms e roda em segundo plano
+  // (sem spinner). O polling pausa quando a aba não está em foco
+  // (document.hidden) e retoma imediatamente ao voltar, evitando gastar
+  // requisições em abas em segundo plano.
+  useEffect(() => {
+    const POLL_INTERVAL_MS = 8000;
+
+    const tick = async () => {
+      if (document.hidden) return;
+      // Usa a versão mais recente de fetchTransactions: um useEffect com []
+      // captura a função da primeira renderização, e essa função fecha sobre o
+      // `filters` antigo — o polling buscaria com filtros desatualizados e
+      // poderia sobrescrever a listagem com resultados de outro filtro.
+      await fetchTransactionsRef.current(true);
+    };
+
+    const intervalId = setInterval(tick, POLL_INTERVAL_MS);
+
+    // Ao voltar para a aba, sincroniza na hora em vez de esperar o proximo tick.
+    const onVisibilityChange = () => {
+      if (!document.hidden) tick();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, []);
 
 
