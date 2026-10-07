@@ -2352,100 +2352,111 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
     }
 
     // 2. Perform atomic reconciliation & lock
-    let totalSum = 0;
     const finalSessionId = session_id || `sess-${Date.now()}`;
 
     db.run('BEGIN TRANSACTION');
+    let totalSum = 0;
     try {
       for (const tx of existingSelected) {
         totalSum += Number(tx.amount);
-      const voucher = (voucher_numbers && voucher_numbers[tx.id]) || general_voucher || null;
+        const voucher = (voucher_numbers && voucher_numbers[tx.id]) || general_voucher || null;
 
-      db.run(
-        `UPDATE transactions SET
-          status = 'RECONCILED',
-          reconciled_at = ?,
-          reconciled_by_user_id = ?,
-          reconciled_by_user_name = ?,
-          driver_id = ?,
-          driver_name = ?,
-          driver_plate = ?,
-          session_id = ?,
-          voucher_number = ?,
-          notes = ?,
-          locked_at = ?
-         WHERE id = ? AND status = 'PENDING' AND company_id = ?`,
-        [
-          nowIso,
-          actorUser.id,
-          actorUser.name,
-          driver.id,
-          driver.name,
-          driver.vehicle_plate,
-          finalSessionId,
-          voucher,
-          notes || null,
-          nowIso,
-          tx.id,
-          companyId
-        ]
-      );
-    }
+        db.run(
+          `UPDATE transactions SET
+            status = 'RECONCILED',
+            reconciled_at = ?,
+            reconciled_by_user_id = ?,
+            reconciled_by_user_name = ?,
+            driver_id = ?,
+            driver_name = ?,
+            driver_plate = ?,
+            session_id = ?,
+            voucher_number = ?,
+            notes = ?,
+            locked_at = ?
+           WHERE id = ? AND status = 'PENDING' AND company_id = ?`,
+          [
+            nowIso,
+            actorUser.id,
+            actorUser.name,
+            driver.id,
+            driver.name,
+            driver.vehicle_plate,
+            finalSessionId,
+            voucher,
+            notes || null,
+            nowIso,
+            tx.id,
+            companyId
+          ]
+        );
+      }
 
-    // 3. Upsert session record
-    const existingSession = await queryOne(`SELECT id FROM reconciliation_sessions WHERE id = ? AND company_id = ?`, [finalSessionId, companyId]);
-    if (existingSession) {
-      db.run(
-        `UPDATE reconciliation_sessions SET
-          status = 'COMPLETED',
-          completed_at = ?,
-          total_items = ?,
-          total_amount = ?,
-          missing_amount = ?,
-          notes = ?
-         WHERE id = ?`,
-        [nowIso, existingSelected.length, totalSum, missingAmountVal, notes || null, finalSessionId]
-      );
-    } else {
-      db.run(
-        `INSERT INTO reconciliation_sessions (
-          id, company_id, driver_id, driver_name, driver_plate, operator_user_id, operator_user_name,
-          status, started_at, completed_at, total_items, total_amount, missing_amount, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?)`,
-        [
-          finalSessionId,
-          companyId,
-          driver.id,
-          driver.name,
-          driver.vehicle_plate,
-          actorUser.id,
-          actorUser.name,
-          nowIso,
-          nowIso,
-          existingSelected.length,
-          totalSum,
-          missingAmountVal,
-          notes || null
-        ]
-      );
-    }
+      // 3. Upsert session record
+      const existingSession = await queryOne(`SELECT id FROM reconciliation_sessions WHERE id = ? AND company_id = ?`, [finalSessionId, companyId]);
+      if (existingSession) {
+        db.run(
+          `UPDATE reconciliation_sessions SET
+            status = 'COMPLETED',
+            completed_at = ?,
+            total_items = ?,
+            total_amount = ?,
+            missing_amount = ?,
+            notes = ?
+           WHERE id = ?`,
+          [nowIso, existingSelected.length, totalSum, missingAmountVal, notes || null, finalSessionId]
+        );
+      } else {
+        db.run(
+          `INSERT INTO reconciliation_sessions (
+            id, company_id, driver_id, driver_name, driver_plate, operator_user_id, operator_user_name,
+            status, started_at, completed_at, total_items, total_amount, missing_amount, notes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?)`,
+          [
+            finalSessionId,
+            companyId,
+            driver.id,
+            driver.name,
+            driver.vehicle_plate,
+            actorUser.id,
+            actorUser.name,
+            nowIso,
+            nowIso,
+            existingSelected.length,
+            totalSum,
+            missingAmountVal,
+            notes || null
+          ]
+        );
+      }
 
-    db.run('COMMIT TRANSACTION');
+      db.run('COMMIT TRANSACTION');
     } catch(err: any) {
       db.run('ROLLBACK TRANSACTION');
       throw err;
     }
 
-    await persistDatabase();
+    // SECURITY: even if persistDatabase/audit log fail, the transactions are
+    // already committed above. We log the audit entry best-effort and ALWAYS
+    // return success to the client because the conciliation actually happened.
+    try {
+      await persistDatabase();
+    } catch (persistErr: any) {
+      console.error('[finish-session] persistDatabase failed (transactions already committed):', persistErr);
+    }
 
-    await logAudit('RECONCILIATION_COMPLETED', 'SESSION', finalSessionId, actorUser, {
-      driver: driver.name,
-      plate: driver.vehicle_plate,
-      itemCount: existingSelected.length,
-      totalAmount: totalSum,
-      missingAmount: missingAmountVal,
-      transactionIds: transaction_ids
-    }, companyId);
+    try {
+      await logAudit('RECONCILIATION_COMPLETED', 'SESSION', finalSessionId, actorUser, {
+        driver: driver.name,
+        plate: driver.vehicle_plate,
+        itemCount: existingSelected.length,
+        totalAmount: totalSum,
+        missingAmount: missingAmountVal,
+        transactionIds: transaction_ids
+      }, companyId);
+    } catch (auditErr: any) {
+      console.error('[finish-session] logAudit failed (transactions already committed):', auditErr);
+    }
 
     // 4. Real-time broadcast to all users
     broadcastEvent('RECONCILIATION_COMPLETED', {
