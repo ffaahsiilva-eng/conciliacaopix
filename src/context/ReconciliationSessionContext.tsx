@@ -138,36 +138,53 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
       return;
     }
 
-    const isSelecting = !selectedTxIds.includes(tx.id);
+    const wasSelected = selectedTxIds.includes(tx.id);
+    const isSelecting = !wasSelected;
 
     if (isSelecting) {
       if (!currentUser) return;
+
+      // Otimista: aplica o estado local IMEDIATAMENTE para feedback instantâneo
+      // do checkbox. O lock do servidor é disparado em background; se falhar
+      // (409), revertemos o estado local e mostramos o modal de bloqueio.
+      setSelectedTxIds((prev) => (prev.includes(tx.id) ? prev : [...prev, tx.id]));
+      setSelectedTransactionsMap((prevMap) =>
+        prevMap[tx.id] ? prevMap : { ...prevMap, [tx.id]: tx }
+      );
+
       try {
         await api.lockTransactions(
           [tx.id],
           activeSessionId,
           currentUser
         );
-        setSelectedTxIds((prev) => (prev.includes(tx.id) ? prev : [...prev, tx.id]));
-        setSelectedTransactionsMap((prevMap) =>
-          prevMap[tx.id] ? prevMap : { ...prevMap, [tx.id]: tx }
-        );
       } catch (err: any) {
+        // Reverte a seleção otimista aplicada acima.
+        setSelectedTxIds((prev) => prev.filter((id) => id !== tx.id));
+        setSelectedTransactionsMap((prevMap) => {
+          const mapCopy = { ...prevMap };
+          delete mapCopy[tx.id];
+          return mapCopy;
+        });
         // Operador (ou admin sem force) caiu em 409 → mostra modal vermelho
         // com nome/descrição/valor do bloqueador. Admin tem botões extras.
         showDetailedBlockFromError(err, tx);
       }
     } else {
-      if (currentUser) {
-        // unlock
-        api.unlockTransactions([tx.id], currentUser).catch(console.error);
-      }
+      // Desmarcar: aplica otimista, dispara unlock em background.
       setSelectedTxIds((prev) => prev.filter((id) => id !== tx.id));
       setSelectedTransactionsMap((prevMap) => {
         const mapCopy = { ...prevMap };
         delete mapCopy[tx.id];
         return mapCopy;
       });
+
+      if (currentUser) {
+        // unlock em background — sem await para não bloquear UI
+        api.unlockTransactions([tx.id], currentUser).catch((err) => {
+          console.error('Falha ao desbloquear transação:', err);
+        });
+      }
     }
   };
 

@@ -1995,8 +1995,7 @@ app.post('/api/transactions/lock', async (req, res) => {
       rollback();
       throw innerErr;
     }
-
-    await persistDatabase();
+    // await persistDatabase(); // Removido: locks são transitórios e causar syncs simultâneos sobrescreve sessões concluídas
 
     // Auditoria: registrar quando admin toma lock de outro usuário
     if (forcedFrom.length > 0) {
@@ -2086,8 +2085,7 @@ app.post('/api/transactions/unlock', async (req, res) => {
         [...transaction_ids, companyId, actorUser.id]
       );
     }
-
-    await persistDatabase();
+    // await persistDatabase(); // Removido: unlocks são transitórios
 
     
     broadcastEvent('TRANSACTIONS_UNLOCKED', {
@@ -2785,7 +2783,17 @@ app.get('/api/reports/audit', async (req, res) => {
       params.push(q, q, q, q);
     }
 
-    const logs = await queryAll(`SELECT * FROM audit_logs WHERE ${whereClauses.join(' AND ')} ORDER BY created_at DESC LIMIT 300`, params);
+    // Tiebreaker por `id` garante ordem estável quando dois eventos ocorrem no
+    // mesmo milissegundo (ex: SESSION_STARTED + RECONCILIATION_COMPLETED
+    // gravados juntos). Sem isso o SQLite retorna em ordem de inserção,
+    // fazendo o registro "pular" de posição a cada reload.
+    const logs = await queryAll(
+      `SELECT * FROM audit_logs
+       WHERE ${whereClauses.join(' AND ')}
+       ORDER BY created_at DESC, id DESC
+       LIMIT 300`,
+      params
+    );
     res.json(logs);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
