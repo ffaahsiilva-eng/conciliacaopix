@@ -24,10 +24,17 @@ export const DriverSessionBar: React.FC<DriverSessionBarProps> = ({ onOpenFinish
 
   const [isExpanded, setIsExpanded] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   const confirmCancel = async () => {
-    await cancelSession();
-    setShowCancelModal(false);
+    setCancelError(null);
+    try {
+      await cancelSession();
+      setShowCancelModal(false);
+    } catch (err: any) {
+      // Mantém o modal aberto com o erro para o operador tentar de novo.
+      setCancelError(err?.message || 'Não foi possível cancelar a conciliação. Tente novamente.');
+    }
   };
 
   if (!isSessionActive || !activeDriver) {
@@ -102,7 +109,7 @@ export const DriverSessionBar: React.FC<DriverSessionBarProps> = ({ onOpenFinish
             )}
 
             <button
-              onClick={() => setShowCancelModal(true)}
+              onClick={() => { setCancelError(null); setShowCancelModal(true); }}
               className="text-xs text-red-600 hover:text-red-800 hover:bg-red-50 border border-red-200 bg-white px-3 py-2 rounded-xl transition-colors flex items-center space-x-1 font-semibold cursor-pointer"
             >
               <XCircle className="w-3.5 h-3.5" />
@@ -159,9 +166,15 @@ export const DriverSessionBar: React.FC<DriverSessionBarProps> = ({ onOpenFinish
                 <AlertTriangle className="w-6 h-6" />
               </div>
               <h3 className="text-lg font-bold text-slate-900 text-center mb-2">Cancelar Conciliação</h3>
-              <p className="text-sm text-slate-600 text-center mb-6">
+              <p className="text-sm text-slate-600 text-center mb-4">
                 Tem certeza que deseja cancelar esta conciliação? As transações marcadas e não salvas voltarão a ficar disponíveis.
               </p>
+              {cancelError && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 text-red-800 text-xs">
+                  <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                  <span>{cancelError}</span>
+                </div>
+              )}
               <div className="flex items-center space-x-3">
                 <button
                   onClick={() => setShowCancelModal(false)}

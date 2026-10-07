@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ReconciliationSession, Transaction, Driver } from '../types';
-import { api, formatCurrency, formatDateTime, formatPlate, formatDate } from '../services/api';
+import { api, formatCurrency, formatDateTime, formatPlate, formatDate, subscribeToRealtimeEvents } from '../services/api';
 import { LicensePlateBadge } from '../components/LicensePlateBadge';
 import { useAuth } from '../context/AuthContext';
 import { useCompany } from '../context/CompanyContext';
@@ -84,6 +84,23 @@ export const SessionsView: React.FC = () => {
 
   useEffect(() => {
     fetchSessions();
+  }, [currentCompany?.id, selectedDriverId, startDate, endDate, searchTerm]);
+
+  // Reflete em tempo real qualquer acerto finalizado, cancelado ou excluído —
+  // inclusive por outro operador. Sem isso, o cancelamento feito na tela de
+  // conciliação deixava o acerto listado aqui até o usuário trocar de tela.
+  useEffect(() => {
+    const unsubscribe = subscribeToRealtimeEvents((event) => {
+      if (
+        event.type === 'RECONCILIATION_COMPLETED' ||
+        event.type === 'RECONCILIATION_SESSION_DELETED' ||
+        event.type === 'SESSION_DELETED' ||
+        event.type === 'SESSION_CANCELLED'
+      ) {
+        fetchSessions();
+      }
+    });
+    return () => unsubscribe();
   }, [currentCompany?.id, selectedDriverId, startDate, endDate, searchTerm]);
 
   const handleOpenDetails = async (session: ReconciliationSession) => {

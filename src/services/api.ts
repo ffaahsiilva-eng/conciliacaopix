@@ -140,8 +140,8 @@ const customFetch = async (url: RequestInfo | URL, init?: RequestInit): Promise<
     fetchUrl = baseUrl + fetchUrl;
   }
 
-  const method = init?.method || 'GET';
-  if (method.toUpperCase() === 'GET') {
+  const method = (init?.method || 'GET').toUpperCase();
+  if (method === 'GET') {
     const separator = fetchUrl.includes('?') ? '&' : '?';
     fetchUrl += `${separator}_t=${Date.now()}_r=${Math.random().toString(36).slice(2)}`;
   }
@@ -156,9 +156,16 @@ const customFetch = async (url: RequestInfo | URL, init?: RequestInit): Promise<
     credentials: init?.credentials || 'same-origin'
   };
 
+  // Operações de escrita podem ser mais lentas: várias persistem o snapshot
+  // do banco (~10MB) no Cloud SQL antes de responder (import de extrato,
+  // exclusão de acerto, finalização de conciliação). Um timeout único de 10s
+  // para tudo causava "Tempo limite excedido" mesmo com a operação já
+  // concluída com sucesso no servidor. 45s dá folga para o snapshot subir
+  // sem mascarar falhas reais de rede.
+  const timeoutMs = method === 'GET' ? 10000 : 45000;
+
   const controller = new AbortController();
-  // 10s Timeout defined for performance & infinite loading resolution
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const signal = init?.signal || controller.signal;
@@ -168,7 +175,8 @@ const customFetch = async (url: RequestInfo | URL, init?: RequestInit): Promise<
   } catch (err: any) {
     clearTimeout(timeoutId);
     if (err.name === 'AbortError') {
-      throw new Error('Tempo limite excedido. O servidor demorou mais de 10 segundos para responder.');
+      const seconds = Math.round(timeoutMs / 1000);
+      throw new Error(`Tempo limite excedido. O servidor demorou mais de ${seconds} segundos para responder.`);
     }
     throw err;
   }

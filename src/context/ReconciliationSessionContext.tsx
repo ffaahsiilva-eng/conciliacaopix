@@ -358,12 +358,26 @@ export const ReconciliationSessionProvider: React.FC<{ children: React.ReactNode
   };
 
   const cancelSession = async () => {
+    // Libera os locks das transações selecionadas (fire-and-forget: o
+    // desbloqueio é best-effort e não deve impedir o cancelamento).
     if (selectedTxIds.length > 0 && currentUser) {
       api.unlockTransactions(selectedTxIds, currentUser).catch(console.error);
     }
+
+    // A sessão precisa ser removida no servidor ANTES de limpar o estado
+    // local. Sem o await, a UI confirmava o cancelamento imediatamente e a
+    // sessão continuava aparecendo em "Acertos Finalizados" quando o
+    // operador voltava a essa tela antes de a requisição terminar.
     if (activeSessionId && currentUser) {
-      api.cancelReconciliationSession(activeSessionId, currentUser).catch(console.error);
+      try {
+        await api.cancelReconciliationSession(activeSessionId, currentUser);
+      } catch (err: any) {
+        // Falhou ao cancelar no servidor: mantém a sessão ativa para que o
+        // operador possa tentar novamente, em vez de perder o controle dela.
+        throw err;
+      }
     }
+
     clearSessionState();
   };
 

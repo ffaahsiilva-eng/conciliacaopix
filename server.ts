@@ -2260,22 +2260,85 @@ app.post('/api/reconciliation/cancel-session', async (req, res) => {
     }
 
     const db = await getDatabase();
-    
-    db.run(
-      `DELETE FROM reconciliation_sessions WHERE id = ? AND company_id = ? AND status = 'IN_PROGRESS'`,
+
+    // Carrega a sessão antes de apagar, para reabrir qualquer transação que
+    // já tenha sido vinculada a ela.
+    const session = await queryOne(
+      `SELECT id, status, driver_name, total_items, total_amount
+       FROM reconciliation_sessions WHERE id = ? AND company_id = ?`,
       [session_id, companyId]
     );
-    
-    await persistDatabase();
 
-    await logAudit('SESSION_DELETED', 'SESSION', session_id, actorUser, {
-      reason: 'Cancelado pelo usuario',
-      status: 'IN_PROGRESS'
-    }, companyId);
+    if (!session) {
+      return res.status(404).json({ error: 'Sessão não encontrada ou já encerrada.' });
+    }
 
-    broadcastEvent('RECONCILIATION_SESSION_DELETED', { session_id, company_id: companyId });
+    // Cancelar precisa SEMPRE remover a sessão da lista de acertos, mesmo que
+    // ela já esteja 'COMPLETED' (ex.: a finalização foi concluída no servidor
+    // mas a UI não recebeu a resposta). O filtro antigo por
+    // status = 'IN_PROGRESS' fazia o DELETE casar zero linhas e o endpoint
+    // respondia sucesso sem apagar nada — o acerto continuava aparecendo em
+    // "Acertos Finalizados" para sempre.
+    db.run('BEGIN IMMEDIATE');
+    try {
+      // Devolve as transações vinculadas para PENDING (idempotente: só afeta
+      // as que ainda apontam para esta sessão).
+      db.run(
+        `UPDATE transactions SET
+          status = 'PENDING',
+          reconciled_at = NULL,
+          reconciled_by_user_id = NULL,
+          reconciled_by_user_name = NULL,
+          driver_id = NULL,
+          driver_name = NULL,
+          driver_plate = NULL,
+          session_id = NULL,
+          voucher_number = NULL,
+          locked_at = NULL
+         WHERE session_id = ? AND company_id = ?`,
+        [session_id, companyId]
+      );
+
+      // Remove a sessão em QUALQUER status ('IN_PROGRESS' ou 'COMPLETED').
+      db.run(`DELETE FROM reconciliation_sessions WHERE id = ? AND company_id = ?`, [session_id, companyId]);
+
+      db.run('COMMIT');
+    } catch (txErr: any) {
+      try { db.run('ROLLBACK'); } catch (_) {}
+      throw txErr;
+    }
+
+    const nowIso = new Date().toISOString();
+    db.run(
+      `INSERT INTO audit_logs (id, company_id, action, entity_type, entity_id, user_id, user_name, user_role, details_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        companyId,
+        'SESSION_CANCELLED',
+        'SESSION',
+        session_id,
+        actorUser.id,
+        actorUser.name,
+        actorUser.role,
+        JSON.stringify({
+          reason: 'Cancelado pelo usuario',
+          previousStatus: session.status,
+          driver: session.driver_name,
+          totalItems: session.total_items,
+          totalAmount: session.total_amount
+        }),
+        nowIso
+      ]
+    );
+
+    broadcastEvent('RECONCILIATION_SESSION_DELETED', { sessionId: session_id, session_id, company_id: companyId });
+    broadcastEvent('TRANSACTION_REOPENED', { sessionId: session_id, reopenedBy: actorUser.name, company_id: companyId });
 
     res.json({ success: true, message: 'Sessão cancelada e apagada.' });
+
+    // Persistência fora do caminho crítico da resposta.
+    scheduleSaveDatabase(1500);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2534,13 +2597,17 @@ app.post('/api/reconciliation/reopen', async (req, res) => {
   }
 });
 
-// List sessions history
+// Lista o histórico de acertos FINALIZADOS.
+// Filtra `status = 'COMPLETED'` no servidor: esta tela é o histórico de acertos
+// concluídos, e sessões 'IN_PROGRESS' em aberto não devem aparecer aqui (antes
+// apareciam como se fossem acertos finalizados, e o totalizador somava valores
+// de sessões que ainda podiam ser canceladas).
 app.get('/api/reconciliation/sessions', async (req, res) => {
   try {
     const companyId = getCompanyId(req);
     const { driver_id, start_date, end_date, search } = req.query;
 
-    const whereClauses: string[] = ['company_id = ?'];
+    const whereClauses: string[] = ['company_id = ?', "status = 'COMPLETED'"];
     const params: any[] = [companyId];
 
     if (driver_id && driver_id !== 'ALL') {
@@ -2601,43 +2668,78 @@ app.delete('/api/reconciliation/sessions/:id', async (req, res) => {
 
     const companyId = session.company_id || 'matriz';
 
-    // Reopen and unlock all transactions linked to this session
-    await runSql(
-      `UPDATE transactions SET 
-        status = 'PENDING',
-        reconciled_at = NULL,
-        reconciled_by_user_id = NULL,
-        reconciled_by_user_name = NULL,
-        driver_id = NULL,
-        driver_name = NULL,
-        driver_plate = NULL,
-        session_id = NULL,
-        voucher_number = NULL,
-        notes = ?,
-        locked_at = NULL
-       WHERE session_id = ?`,
-      [`Acerto #${id} excluído pelo administrador ${actorUser.name}. Lançamentos reabertos para Pendente.`, id]
+    // Reopen and unlock all transactions linked to this session.
+    // Usa `db.run` direto (não `runSql`) porque `runSql` dispara um
+    // `persistDatabase()` por chamada, e este endpoint fazia 4 uploads
+    // sequenciais do snapshot de ~10MB para o Cloud SQL — estourando o
+    // timeout de 10s do cliente mesmo com a exclusão já aplicada.
+    const db = await getDatabase();
+
+    // Atomicidade: reaberturas + remoção do registro em uma única transação.
+    db.run('BEGIN IMMEDIATE');
+    try {
+      db.run(
+        `UPDATE transactions SET 
+          status = 'PENDING',
+          reconciled_at = NULL,
+          reconciled_by_user_id = NULL,
+          reconciled_by_user_name = NULL,
+          driver_id = NULL,
+          driver_name = NULL,
+          driver_plate = NULL,
+          session_id = NULL,
+          voucher_number = NULL,
+          notes = ?,
+          locked_at = NULL
+         WHERE session_id = ?`,
+        [`Acerto #${id} excluído pelo administrador ${actorUser.name}. Lançamentos reabertos para Pendente.`, id]
+      );
+
+      db.run(`DELETE FROM reconciliation_sessions WHERE id = ?`, [id]);
+
+      db.run('COMMIT');
+    } catch (txErr: any) {
+      try { db.run('ROLLBACK'); } catch (_) {}
+      throw txErr;
+    }
+
+    // Grava o log de auditoria direto no mesmo DB (sem persist ainda).
+    const nowIso = new Date().toISOString();
+    const auditId = `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    db.run(
+      `INSERT INTO audit_logs (id, company_id, action, entity_type, entity_id, user_id, user_name, user_role, details_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        auditId,
+        companyId,
+        'SESSION_DELETED',
+        'SESSION',
+        id,
+        actorUser.id,
+        actorUser.name,
+        actorUser.role,
+        JSON.stringify({
+          driver: session.driver_name,
+          plate: session.driver_plate,
+          totalItems: session.total_items,
+          totalAmount: session.total_amount
+        }),
+        nowIso
+      ]
     );
-
-    // Delete session record
-    await runSql(`DELETE FROM reconciliation_sessions WHERE id = ?`, [id]);
-
-    await persistDatabase();
-
-    await logAudit('SESSION_DELETED', 'SESSION', id, actorUser, {
-      driver: session.driver_name,
-      plate: session.driver_plate,
-      totalItems: session.total_items,
-      totalAmount: session.total_amount
-    }, companyId);
 
     broadcastEvent('SESSION_DELETED', { sessionId: id, company_id: companyId });
     broadcastEvent('TRANSACTION_REOPENED', { sessionId: id, reopenedBy: actorUser.name, company_id: companyId });
 
+    // Responde IMEDIATAMENTE. A persistência do snapshot é agendada em
+    // background: a exclusão já está aplicada no DB em memória e será
+    // sincronizada com o Cloud SQL em breve, sem travar a UI.
     res.json({
       success: true,
       message: `Acerto do motorista "${session.driver_name}" excluído com sucesso. Todos os lançamentos foram devolvidos ao extrato como Pendentes.`
     });
+
+    scheduleSaveDatabase(1500);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -140,6 +140,11 @@ function AppContent() {
       totalAmount: data.totalAmount,
       missingAmount: data.missingAmount
     });
+    // Recarrega os motoristas para limpar `active_session` da sessão que acabou
+    // de ser concluída. Sem isso, `drivers` mantém o `active_session`
+    // IN_PROGRESS no StartSessionModal, deixando o motorista exibido como
+    // "Em conciliação" e o operador sem conseguir iniciar outro acerto.
+    refreshDrivers().catch((err) => console.error('Failed to refresh drivers after finish:', err));
   };
 
   if (authLoading) {
