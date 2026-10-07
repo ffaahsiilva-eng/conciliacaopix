@@ -155,71 +155,82 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
   return null;
 }
 
-let cloudSqlSavePromise: Promise<void> | null = null;
-
 // Track the raw byte size of the last known healthy DB saved to Cloud SQL
 // ALWAYS store raw bytes (not base64/compressed) for consistent comparison
 let knownHealthyRawBytes = 0;
 
 export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
-  const currentPromise = cloudSqlSavePromise || Promise.resolve();
+  const pool = getCloudSqlPool();
+  if (!pool) {
+    // No Cloud SQL configured — local-only mode, nothing to persist
+    return;
+  }
 
-  const nextPromise = currentPromise.then(async () => {
+  // SAFETY SHIELD: Only block truly empty/corrupted databases (< 10KB)
+  const EMPTY_DB_THRESHOLD = 10000;
+  if (buffer.length < EMPTY_DB_THRESHOLD) {
+    console.error(
+      `[CloudSQL SAFETY SHIELD] BLOCKED: Buffer is only ${buffer.length} bytes (likely empty/corrupted). Refusing to overwrite.`
+    );
+    return;
+  }
+
+  // If we know the Cloud SQL DB was significantly larger, block drastic shrinkage (< 20%)
+  if (knownHealthyRawBytes > 0 && buffer.length < knownHealthyRawBytes * 0.20) {
+    console.error(
+      `[CloudSQL SAFETY SHIELD] BLOCKED: Buffer (${buffer.length} bytes) is < 20% of last known healthy (${knownHealthyRawBytes} bytes). Saving to emergency backup.`
+    );
     try {
-      // SAFETY SHIELD: Only block truly empty/corrupted databases (< 10KB)
-      // A real SQLite with schema only is ~50-100KB; 10KB means something went very wrong
-      const EMPTY_DB_THRESHOLD = 10000; // 10KB - truly empty/corrupted db
-      if (buffer.length < EMPTY_DB_THRESHOLD) {
-        console.error(
-          `[CloudSQL SAFETY SHIELD] BLOCKED: Current buffer is only ${buffer.length} bytes, which looks like an empty/corrupted database. Refusing to overwrite Cloud SQL.`
-        );
-        return;
-      }
+      await safeCloudSqlQuery(
+        `INSERT INTO system_snapshots (key, data, updated_at)
+         VALUES ('main_db_emergency_backup', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [buffer.toString('base64')],
+        15000
+      );
+    } catch (_) {}
+    return;
+  }
 
-      // If we know the Cloud SQL DB was significantly larger than what we have now,
-      // only block if current is less than 20% of the known size (likely a reset/corruption)
-      if (knownHealthyRawBytes > 0 && buffer.length < knownHealthyRawBytes * 0.20) {
-        console.error(
-          `[CloudSQL SAFETY SHIELD] BLOCKED: Current buffer (${buffer.length} bytes) is less than 20% of last known healthy size (${knownHealthyRawBytes} bytes). Possible data corruption. Saving to emergency backup.`
-        );
-        const b64Emergency = buffer.toString('base64');
-        await safeCloudSqlQuery(
-          `INSERT INTO system_snapshots (key, data, updated_at) 
-           VALUES ('main_db_emergency_backup', $1, NOW()) 
-           ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-          [b64Emergency],
-          15000
-        );
-        return;
-      }
+  // Compress
+  const compressed = gzipSync(buffer, { level: 3 });
+  const b64 = compressed.toString('base64');
 
-      // Compress and save
-      const compressed = gzipSync(buffer, { level: 3 });
-      const b64 = compressed.toString('base64');
-
+  // Save with dedicated retry loop (up to 3 attempts, 45s timeout each)
+  let lastError: string = '';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
       const result = await safeCloudSqlQuery(
-        `INSERT INTO system_snapshots (key, data, updated_at) 
-         VALUES ('main_db', $1, NOW()), ('main_db_backup', $1, NOW()) 
+        `INSERT INTO system_snapshots (key, data, updated_at)
+         VALUES ('main_db', $1, NOW()), ('main_db_backup', $1, NOW())
          ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
         [b64],
-        20000
+        45000  // 45s timeout — large snapshots need more time
       );
 
       if (result) {
-        // Track in raw bytes for consistent future comparisons
         knownHealthyRawBytes = buffer.length;
-        console.log(`[CloudSQL] Saved snapshot: ${buffer.length} bytes raw → ${compressed.length} bytes gzip → ${b64.length} bytes b64`);
-      } else {
-        console.warn(`[CloudSQL] Save returned null (connection issue), data may not have been persisted.`);
+        console.log(`[CloudSQL] ✅ Saved: ${buffer.length} raw → ${compressed.length} gzip → ${b64.length} b64 (attempt ${attempt})`);
+        return; // SUCCESS
       }
-    } catch (err: any) {
-      console.warn('[CloudSQL] Warning persisting snapshot to Cloud SQL:', err?.message || err);
-    }
-  }).catch(() => {});
 
-  cloudSqlSavePromise = nextPromise;
-  return nextPromise;
+      lastError = 'safeCloudSqlQuery returned null';
+      console.warn(`[CloudSQL] Save attempt ${attempt}/3 returned null, retrying...`);
+    } catch (err: any) {
+      lastError = err?.message || String(err);
+      console.warn(`[CloudSQL] Save attempt ${attempt}/3 failed:`, lastError);
+    }
+
+    // Wait before retry
+    if (attempt < 3) {
+      await new Promise((r) => setTimeout(r, attempt * 2000));
+    }
+  }
+
+  // All 3 attempts failed — this is critical
+  console.error(`[CloudSQL] ❌ CRITICAL: All 3 save attempts failed! Last error: ${lastError}`);
 }
+
 
 
 export async function getDatabase(): Promise<Database> {
