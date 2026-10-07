@@ -1,4 +1,4 @@
-node_modules/
+﻿node_modules/
 build/
 dist/
 coverage/
@@ -6,3 +6,4 @@ coverage/
 *.log
 .env*
 !.env.example
+projeto-completo.zip
