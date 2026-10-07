@@ -1067,7 +1067,23 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                   const isCobranca = tx.description && tx.description.toLowerCase().includes('cobrança');
                   const isDebit = tx.type === 'DEBIT';
                   const isTemporarilyLockedByOther = !isSelected && tx.locked_by_user_id && tx.locked_by_user_id !== currentUser?.id;
-                  const isLockedByMeInAnotherSession = tx.locked_by_user_id === currentUser?.id && !isSelected;
+
+// Lock do próprio usuário só bloqueia se vier de uma sessão
+                  // diferente da que está aberta agora. Se `locked_by_session_id`
+                  // é igual a `activeSessionId`, a transação pertence a esta
+                  // conciliação e precisa poder ser marcada. Sem essa
+                  // distinção, o operador via os próprios PIX como "travados
+                  // por outra sessão" e não conseguia selecioná-los.
+                  //
+                  // Sem sessão ativa nada é selecionável de qualquer forma (o
+                  // clique abre os detalhes), então nesse caso o lock próprio
+                  // deve continuar bloqueando — é ele que evita o duplo clique
+                  // numa transação que outra aba ainda está editando.
+                  const isLockedByMeInAnotherSession =
+                    tx.locked_by_user_id === currentUser?.id &&
+                    !isSelected &&
+                    !(activeSessionId && tx.locked_by_session_id === activeSessionId);
+
                   const isBlockedFromSelection = isReconciled || isReturned || isIgnored || isDebit || isTemporarilyLockedByOther || isLockedByMeInAnotherSession;
 
                   return (

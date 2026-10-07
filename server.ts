@@ -2294,7 +2294,10 @@ app.post('/api/reconciliation/cancel-session', async (req, res) => {
           driver_plate = NULL,
           session_id = NULL,
           voucher_number = NULL,
-          locked_at = NULL
+          locked_at = NULL,
+          locked_by_user_id = NULL,
+          locked_by_user_name = NULL,
+          locked_by_session_id = NULL
          WHERE session_id = ? AND company_id = ?`,
         [session_id, companyId]
       );
@@ -2567,7 +2570,7 @@ app.post('/api/reconciliation/reopen', async (req, res) => {
     const companyId = tx.company_id || 'matriz';
 
     await runSql(
-      `UPDATE transactions SET 
+      `UPDATE transactions SET
         status = 'PENDING',
         reconciled_at = NULL,
         reconciled_by_user_id = NULL,
@@ -2578,7 +2581,10 @@ app.post('/api/reconciliation/reopen', async (req, res) => {
         session_id = NULL,
         voucher_number = NULL,
         notes = ?,
-        locked_at = NULL
+        locked_at = NULL,
+        locked_by_user_id = NULL,
+        locked_by_user_name = NULL,
+        locked_by_session_id = NULL
        WHERE id = ?`,
       [`Reaberto por ${actorUser.name}: ${reason || 'Sem justificativa'}`, transaction_id]
     );
@@ -2679,7 +2685,7 @@ app.delete('/api/reconciliation/sessions/:id', async (req, res) => {
     db.run('BEGIN IMMEDIATE');
     try {
       db.run(
-        `UPDATE transactions SET 
+        `UPDATE transactions SET
           status = 'PENDING',
           reconciled_at = NULL,
           reconciled_by_user_id = NULL,
@@ -2689,10 +2695,13 @@ app.delete('/api/reconciliation/sessions/:id', async (req, res) => {
           driver_plate = NULL,
           session_id = NULL,
           voucher_number = NULL,
-          notes = ?,
-          locked_at = NULL
+          notes = NULL,
+          locked_at = NULL,
+          locked_by_user_id = NULL,
+          locked_by_user_name = NULL,
+          locked_by_session_id = NULL
          WHERE session_id = ?`,
-        [`Acerto #${id} excluído pelo administrador ${actorUser.name}. Lançamentos reabertos para Pendente.`, id]
+        [id]
       );
 
       db.run(`DELETE FROM reconciliation_sessions WHERE id = ?`, [id]);
