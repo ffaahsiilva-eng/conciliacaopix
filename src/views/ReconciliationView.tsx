@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Transaction, BankAccount, Driver, TransactionFilters, TransactionStats } from '../types';
-import { api, formatCurrency, formatDate, formatDateTime, formatPlate, subscribeToRealtimeEvents } from '../services/api';
+import { api, formatCurrency, formatDate, formatDateTime, formatPlate, subscribeToRealtimeEvents, getLocalDataChangeVersion, getLastSeenDataVersion, setLastSeenDataVersion } from '../services/api';
 import { LicensePlateBadge } from '../components/LicensePlateBadge';
 import { useAuth } from '../context/AuthContext';
 import { useCompany } from '../context/CompanyContext';
@@ -160,6 +160,29 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
   useEffect(() => {
     fetchTransactions();
   }, [filters, currentCompany?.id]);
+
+  // Ações feitas pelo operador em OUTRAS telas (excluir um acerto em "Acertos
+  // Finalizados", cancelar uma conciliação, reabrir um lançamento) liberam as
+  // transações de volta para PENDING. Como esta view é desmontada quando o
+  // usuário troca de aba, ela não estava registrada no SSE naquele instante e
+  // o evento se perdia — a lista continuava mostrando os lançamentos como
+  // conciliados até recarregar a página ou clicar no botão de atualizar.
+  //
+  // O contador vive no módulo (não em useRef) porque a view é desmontada a cada
+  // troca de aba e um ref local seria recriado vazio, perdendo a comparação.
+  // O `useEffect` com [] roda uma vez por montagem e, se houve ação local
+  // enquanto a tela estava fora, refaz o fetch em segundo plano (sem spinner
+  // para não piscar a listagem).
+  useEffect(() => {
+    const previousVersion = getLastSeenDataVersion();
+    const currentVersion = getLocalDataChangeVersion();
+    setLastSeenDataVersion(currentVersion);
+
+    if (currentVersion !== previousVersion) {
+      fetchTransactions(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
 
   useEffect(() => {

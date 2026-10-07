@@ -89,6 +89,40 @@ export function subscribeToRealtimeEvents(callback: EventCallback): () => void {
   };
 }
 
+// Sinal local de "os dados mudaram". Ações feitas pelo usuário (excluir um
+// acerto em Acertos Finalizados) ocorrem em telas onde a ReconciliationView
+// não está montada, então nenhum listener SSE está registrado naquele instante e
+// o evento se perde — a tela voltava desatualizada até o operador clicar no
+// botão de atualizar ou recarregar a página. A ReconciliationView compara este
+// contador ao remontar e refaz o fetch se ele mudou.
+//
+// O contador é global (não por instância do componente) porque la view é
+// desmontada a cada troca de aba: um useRef local seria recriado vazio no
+// próximo mount e a atualização seria perdida.
+let localDataChangeVersion = 0;
+
+export function notifyLocalDataChange(): void {
+  localDataChangeVersion++;
+}
+
+/** Versão atual do contador; compare com a que você guardou para detectar mudanças. */
+export function getLocalDataChangeVersion(): number {
+  return localDataChangeVersion;
+}
+
+// Versão vista pela última montagem da ReconciliationView. Fica no módulo
+// (não em useRef) porque a view é desmontada a cada troca de aba e um ref
+// local seria recriado vazio, perdendo a comparação.
+let lastSeenReconciliationDataVersion = 0;
+
+export function getLastSeenDataVersion(): number {
+  return lastSeenReconciliationDataVersion;
+}
+
+export function setLastSeenDataVersion(version: number): void {
+  lastSeenReconciliationDataVersion = version;
+}
+
 function connectSse() {
   try {
     eventSource = new EventSource('/api/events');
@@ -624,6 +658,7 @@ export const api = {
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Falha ao cancelar sessão');
+    notifyLocalDataChange();
     return json;
   },
 
@@ -656,6 +691,7 @@ export const api = {
       (err as any).conflictTx = json.conflictTx;
       throw err;
     }
+    notifyLocalDataChange();
     return json;
   },
 
@@ -667,6 +703,7 @@ export const api = {
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Falha ao reabrir conciliação');
+    notifyLocalDataChange();
     return json;
   },
 
@@ -706,6 +743,9 @@ export const api = {
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Falha ao excluir acerto finalizado');
+    // As transações voltam para PENDING; telas que as exibem precisam refazer
+    // o fetch assim que ficarem visíveis de novo.
+    notifyLocalDataChange();
     return json;
   },
 
