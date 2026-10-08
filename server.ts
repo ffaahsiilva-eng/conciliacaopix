@@ -8,7 +8,7 @@ import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import path from 'path';
 import fs from 'fs';
-import { getDatabase, persistDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery } from './server/db.js';
+import { getDatabase, persistDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery, startBackupScheduler, listLocalBackups, createLocalBackup } from './server/db.js';
 import { parseOfx, isBalanceLine } from './server/parsers/ofxParser.js';
 import { parseCsvStatement } from './server/parsers/csvParser.js';
 
@@ -181,6 +181,11 @@ async function cleanupOrphanLocks() {
 
 // Run cleanup periodically every 10 minutes
 setInterval(cleanupOrphanLocks, 10 * 60 * 1000);
+
+// Backup automático: garante um ponto de retorno mesmo com o usuário ocioso.
+// Ver startBackupScheduler em server/db.ts (cópia local com retenção + upload
+// ao Cloud SQL a cada 30 min).
+startBackupScheduler();
 
 // Helper for running SQL with proper mapping and guaranteed stmt.free()
 async function queryAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
@@ -3023,6 +3028,47 @@ app.post('/api/database/clean', async (req, res) => {
     res.json({
       success: true,
       message: 'Banco de dados desta empresa limpo com sucesso! Lançamentos e extratos zerados.'
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// BACKUPS AUTOMÁTICOS
+//
+// Rotas administrativas para inspecionar e forçar um backup. A restauração
+// em si é feita pela tela de Backup, que já valida o arquivo antes de aplicar.
+// ============================================================================
+
+// Lista os backups locais disponíveis
+app.get('/api/database/backups', async (req, res) => {
+  try {
+    const backups = listLocalBackups();
+    res.json({
+      success: true,
+      count: backups.length,
+      backups,
+      // Onde os arquivos ficam, para o admin baixar manualmente se precisar
+      location: 'data/backups/',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Força a criação de um backup agora (útil antes de qualquer operação arriscada)
+app.post('/api/database/backups', async (req, res) => {
+  try {
+    const db = await getDatabase();
+    const data = db.export();
+    createLocalBackup('manual', Buffer.from(data));
+    await persistDatabase();
+    res.json({
+      success: true,
+      message: 'Backup criado com sucesso.',
+      size: data.length,
+      backups: listLocalBackups(),
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

@@ -112,12 +112,35 @@ export async function safeCloudSqlQuery<T extends pg.QueryResultRow = any>(
 }
 
 
+// Última vez que o arquivo local foi gravado. Usado para decidir, no boot,
+// qual das duas cópias (local x Cloud SQL) é a mais recente: sem isso, um
+// snapshot antigo no Cloud SQL sobrescrevia o trabalho mais recente que
+// hadn't chegado ao upload ainda.
+let localFileLastWriteMs = 0;
+
+// Timestamp (ms) do snapshot no Cloud SQL, preenchido por loadSnapshotFromCloudSql.
+let cloudSnapshotUpdatedMs = 0;
+
+/** Marca o arquivo local como a fonte mais recente (chamado após cada gravação). */
+export function markLocalFileFresh(): void {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      localFileLastWriteMs = fs.statSync(DB_FILE).mtimeMs;
+    }
+  } catch (_) {}
+}
+
+/** Timestamp (ms) do último save local bem-sucedido. */
+export function getLocalFileMtime(): number {
+  return localFileLastWriteMs;
+}
+
 export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
   // Try up to 4 times with backoff to handle cold start when Cloud SQL is spinning up from scale-to-zero
   for (let attempt = 1; attempt <= 4; attempt++) {
     try {
-      const res = await safeCloudSqlQuery<{ data: string }>(
-        `SELECT data FROM system_snapshots WHERE key = 'main_db'`,
+      const res = await safeCloudSqlQuery<{ data: string; updated_at: Date }>(
+        `SELECT data, updated_at FROM system_snapshots WHERE key = 'main_db'`,
         undefined,
         35000
       );
@@ -134,6 +157,9 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
         if (buf.length > 0) {
           // Track the raw SQLite bytes for consistent Safety Shield comparisons
           knownHealthyRawBytes = buf.length;
+          cloudSnapshotUpdatedMs = res.rows[0]?.updated_at
+            ? new Date(res.rows[0].updated_at).getTime()
+            : 0;
           console.log(`[CloudSQL] Loaded database snapshot (${buf.length} bytes) from Google Cloud SQL.`);
           return buf;
         }
@@ -251,15 +277,49 @@ export async function getDatabase(): Promise<Database> {
 
     let instance: Database | undefined;
 
-    // 1. Try restoring from Cloud SQL permanent persistent storage first!
+    // 1. Restaurar do Cloud SQL, mas só se ele for mais recente que o arquivo local.
+    //
+    // Causa raiz da perda de dados: o boot fazia o Cloud SQL sobrescrever o
+    // arquivo local sem comparar os dois. Se o upload falhasse (ou o processo
+    // morresse antes), o trabalho mais recente ficava só em memória e a próxima
+    // subida sobrescrevia tudo pelo snapshot antigo.
     try {
+      // Registra o mtime do arquivo local ANTES de qualquer escrita.
+      markLocalFileFresh();
+
       const cloudBuffer = await loadSnapshotFromCloudSql();
+
       if (cloudBuffer && cloudBuffer.length > 0) {
-        instance = new SQL.Database(cloudBuffer);
-        try {
-          fs.writeFileSync(DB_FILE, cloudBuffer);
-        } catch (_) {}
-        console.log(`[DB] Database successfully restored from Cloud SQL permanent storage (${cloudBuffer.length} bytes).`);
+        // Compara a idade das duas cópias. Uma diferença pequena (< 2 min) é
+        // ruído de granularidade de `updated_at` do Postgres e não justifica
+        // descartar o snapshot do Cloud SQL.
+        const localIsNewer =
+          localFileLastWriteMs > 0 &&
+          cloudSnapshotUpdatedMs > 0 &&
+          localFileLastWriteMs > cloudSnapshotUpdatedMs + 120_000;
+
+        if (localIsNewer) {
+          console.warn(
+            `[DB] ⚠️  Arquivo local é mais recente que o snapshot do Cloud SQL ` +
+            `(local: ${new Date(localFileLastWriteMs).toISOString()}, ` +
+            `cloud: ${new Date(cloudSnapshotUpdatedMs).toISOString()}). ` +
+            `Mantendo o local para não perder trabalho recente.`
+          );
+          // Não usa o snapshot da nuvem; cai no passo 2 (restaurar do local).
+        } else {
+          instance = new SQL.Database(cloudBuffer);
+          // Backup local antes de sobrescrever: o arquivo atual pode ser mais
+          // recente que o snapshot (caso "localIsNewer") ou estar corrompido.
+          try {
+            if (fs.existsSync(DB_FILE) && localFileLastWriteMs > cloudSnapshotUpdatedMs) {
+              fs.copyFileSync(DB_FILE, `${DB_FILE}.prev`);
+            }
+          } catch (_) {}
+          try {
+            fs.writeFileSync(DB_FILE, cloudBuffer);
+          } catch (_) {}
+          console.log(`[DB] Database successfully restored from Cloud SQL permanent storage (${cloudBuffer.length} bytes).`);
+        }
       }
     } catch (err) {
       console.error('[DB] Failed restoring from Cloud SQL:', err);
@@ -283,6 +343,11 @@ export async function getDatabase(): Promise<Database> {
     const dbToUse: Database = instance || new SQL.Database();
     dbInstance = dbToUse;
 
+    // Backup do estado carregado, ANTES de qualquer migração. Se uma migração
+    // futura corromper o schema, existe aqui um ponto de retorno do estado
+    // exato que foi carregado no boot.
+    createLocalBackup('boot');
+
     // Initialize schemas, indexes, migrations, and bank catalogs
     initSchema(dbToUse);
 
@@ -298,19 +363,103 @@ export async function getDatabase(): Promise<Database> {
   return dbInitPromise;
 }
 
+// ============================================================================
+// BACKUP AUTOMÁTICO LOCAL
+//
+// Cada gravação que altera dados de negócio cria uma cópia datada em
+// data/backups/, com retenção rotativa. Isso dá um ponto de retorno mesmo que
+// o Cloud SQL nunca receba o upload (instância dormindo, rede caída, processo
+// encerrado) — exatamente o cenário que causou a perda relatada.
+// ============================================================================
+
+const BACKUP_DIR = path.join(DB_DIR, 'backups');
+const BACKUP_RETENTION = 30; // mantém os últimos 30 backups
+let lastBackupMs = 0;
+const BACKUP_MIN_INTERVAL_MS = 5 * 60 * 1000; // no máximo 1 backup a cada 5 min
+
+/**
+ * Cria uma cópia datada do banco em data/backups/.
+ * Sem argumentos: exporta o dbInstance. Com buffer: usa o buffer fornecido
+ * (permite fazer backup de um snapshot vindo do Cloud SQL).
+ */
+export function createLocalBackup(reason: string, buffer?: Buffer): void {
+  try {
+    if (!isVercel) {
+      if (!fs.existsSync(BACKUP_DIR)) {
+        fs.mkdirSync(BACKUP_DIR, { recursive: true });
+      }
+    }
+
+    const data = buffer || dbInstance?.export();
+    if (!data || data.length < 1000) return; // nunca salvar lixo
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const safeReason = reason.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
+    const file = path.join(BACKUP_DIR, `backup-${stamp}-${safeReason}.sqlite`);
+
+    fs.writeFileSync(file, Buffer.from(data));
+    console.log(`[Backup] ✅ Criado: ${path.basename(file)} (${data.length} bytes)`);
+
+    pruneOldBackups();
+    lastBackupMs = Date.now();
+  } catch (err: any) {
+    // Backup falhou não pode derrubar a operação de negócio que o originou
+    console.error('[Backup] Falha ao criar backup local:', err?.message || err);
+  }
+}
+
+/** Remove backups além da retenção, mantendo sempre os mais recentes. */
+function pruneOldBackups(): void {
+  try {
+    if (isVercel || !fs.existsSync(BACKUP_DIR)) return;
+
+    const files = fs
+      .readdirSync(BACKUP_DIR)
+      .filter((f) => f.startsWith('backup-') && f.endsWith('.sqlite'))
+      .map((f) => ({
+        name: f,
+        full: path.join(BACKUP_DIR, f),
+        mtime: fs.statSync(path.join(BACKUP_DIR, f)).mtimeMs,
+      }))
+      .sort((a, b) => b.mtime - a.mtime);
+
+    if (files.length <= BACKUP_RETENTION) return;
+
+    for (const old of files.slice(BACKUP_RETENTION)) {
+      try {
+        fs.unlinkSync(old.full);
+        console.log(`[Backup] Removido backup antigo: ${old.name}`);
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+/**
+ * Backup local com throttling: chamado após cada persistência, mas cria no
+ * máximo um arquivo a cada BACKUP_MIN_INTERVAL_MS para não encher o disco.
+ */
+function maybeCreateLocalBackup(reason: string): void {
+  if (Date.now() - lastBackupMs < BACKUP_MIN_INTERVAL_MS) return;
+  createLocalBackup(reason);
+}
+
 export async function persistDatabase(): Promise<void> {
   if (!dbInstance) return;
   const data = dbInstance.export();
   const buffer = Buffer.from(data);
-  
+
   // Save to local disk (best-effort, ephemeral on Vercel)
   try {
     const tempFile = `${DB_FILE}.tmp`;
     fs.writeFileSync(tempFile, buffer);
     fs.renameSync(tempFile, DB_FILE);
+    markLocalFileFresh();
   } catch (err) {
     console.error('[DB] Error saving to local disk (non-fatal):', err);
   }
+
+  // Backup local antes do upload: se o Cloud SQL falhar, o backup ainda existe.
+  maybeCreateLocalBackup('auto');
 
   // Save to Cloud SQL (required for persistence across Vercel instances)
   await saveSnapshotToCloudSql(buffer);
@@ -324,6 +473,9 @@ export function persistDatabaseSync(): void {
     const tempFile = `${DB_FILE}.tmp`;
     fs.writeFileSync(tempFile, buffer);
     fs.renameSync(tempFile, DB_FILE);
+    markLocalFileFresh();
+
+    maybeCreateLocalBackup('auto');
 
     // Asynchronously synchronize snapshot to Google Cloud SQL permanent storage with safety shield
     saveSnapshotToCloudSql(buffer);
@@ -882,4 +1034,48 @@ function initSchema(db: Database): void {
 
   // NOTE: NO FICTIONAL TRANSACTIONS, NO FICTIONAL DRIVERS, NO FICTIONAL BATCHES OR SESSIONS.
   // The database starts 100% clean and pristine, ready for real user bank statements and real driver entries.
+}
+
+// ============================================================================
+// AGENDADOR DE BACKUP
+//
+// Rede de segurança final: mesmo que nenhuma operação de negócio dispare
+// persistência (usuário ocioso), o banco é copiado a cada 30 min. Assim o
+// intervalo máximo de perda em caso de falha catastrófica é de 30 min.
+// ============================================================================
+export function startBackupScheduler(): void {
+  if (isVercel) return; // filesystem efêmero no Vercel; o Cloud SQL é quem persiste
+
+  const timer = setInterval(() => {
+    try {
+      if (!dbInstance) return;
+      createLocalBackup('periodic');
+      // Garante que o Cloud SQL receba o estado atual mesmo sem operação de negócio
+      const data = dbInstance.export();
+      saveSnapshotToCloudSql(Buffer.from(data));
+    } catch (err: any) {
+      console.error('[Backup] Falha no backup periódico:', err?.message || err);
+    }
+  }, 30 * 60 * 1000);
+
+  // Não segura o processo aberto por causa do timer
+  timer.unref?.();
+  console.log('[Backup] Agendador ativo: backup local + Cloud SQL a cada 30 minutos.');
+}
+
+/** Lista os backups locais disponíveis, mais recentes primeiro. */
+export function listLocalBackups(): { file: string; size: number; modifiedAt: string }[] {
+  try {
+    if (isVercel || !fs.existsSync(BACKUP_DIR)) return [];
+    return fs
+      .readdirSync(BACKUP_DIR)
+      .filter((f) => f.startsWith('backup-') && f.endsWith('.sqlite'))
+      .map((f) => {
+        const st = fs.statSync(path.join(BACKUP_DIR, f));
+        return { file: f, size: st.size, modifiedAt: st.mtime.toISOString() };
+      })
+      .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  } catch (_) {
+    return [];
+  }
 }

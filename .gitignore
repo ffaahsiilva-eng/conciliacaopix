@@ -7,14 +7,22 @@ coverage/
 .env*
 !.env.example
 projeto-completo.zip
-concilacaopix/
+conciliacaopix/
 
 # Banco de producao: nunca versionar.
 # O arquivo e reescrito a cada gravacao, entao qualquer clone/reset/checkout
-# sobrescreveria os dados mais recentes. A protecao oficial e o backup
-# automatico em D:\Projetos Sistemas\_backups (tarefa "Conciliapix - Backup Banco").
+# sobrescreveria os dados mais recentes.
+#
+# Tres camadas de protecao:
+#   1. .kilo/scripts/backup-banco.ps1 + tarefa agendada "Conciliapix - Backup Banco"
+#      (hourly, rotacao de 60 copias em D:\Projetos Sistemas\_backups)
+#   2. backup automatico do app em data/backups/ (retencao de 30)
+#   3. snapshot no Google Cloud SQL, restaurado no boot apenas se for mais
+#      recente que o arquivo local (ver loadSnapshotFromCloudSql em server/db.ts)
 data/*.sqlite
 data/*.sqlite-journal
 data/*.sqlite-wal
 data/*.sqlite-shm
 data/*.tmp
+data/*.prev
+data/backups/
