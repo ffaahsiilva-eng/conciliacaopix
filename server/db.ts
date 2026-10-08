@@ -22,13 +22,22 @@ let pgPool: pg.Pool | null = null;
 let isSavingToCloudSql = false;
 let pendingSaveBuffer: Buffer | null = null;
 
+// Motivo da última falha de consulta ao Supabase. Preservado para que o
+// /api/health possa reportar a causa real em vez de apenas "banco vazio".
+let lastQueryError: string | null = null;
+
 export function getCloudSqlPool(): pg.Pool | null {
   if (process.env.SQL_HOST && process.env.SQL_USER && process.env.SQL_PASSWORD) {
     if (!pgPool) {
+      // Corrige a combinação host direto + usuário de pooler, que o Render
+      // configura por engano com frequência (ver resolveSupabaseCredentials).
+      const resolved = resolveSupabaseCredentials();
+      const effectiveUser = resolved?.user || process.env.SQL_USER;
+
       pgPool = new Pool({
         host: process.env.SQL_HOST,
         port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432,
-        user: process.env.SQL_USER,
+        user: effectiveUser,
         password: process.env.SQL_PASSWORD,
         database: process.env.SQL_DB_NAME || 'postgres',
         ssl: { rejectUnauthorized: false }, // Required for Supabase
@@ -86,6 +95,39 @@ export function getCloudSqlPool(): pg.Pool | null {
 
 let databaseMisconfigWarningShown = false;
 
+// Detecta a incompatibilidade mais comum do Supabase: host direto
+// (db.<ref>.supabase.co) com usuário do pooler (postgres.<ref>).
+//
+// O Render painel costuma colar o host direto, mas o Connection String que a
+// maioria copia usa o pooler (aws-0-<regiao>.pooler.supabase.com) e o usuário
+// no formato postgres.<ref>. Essa combinação NÃO autentica: o host direto
+// espera o usuário "postgres" puro. O sintoma é
+// "password authentication failed for user postgres.<ref>", que parece senha
+// errada mas nao é.
+//
+// Testado contra o projeto real em 08/10/2026:
+//   db.<ref>.supabase.co  + postgres.<ref>   -> FALHA
+//   db.<ref>.supabase.co  + postgres        -> OK
+//   aws-0-<regiao>.pooler... + postgres.<ref> -> OK
+function resolveSupabaseCredentials(): { host: string; user: string } | null {
+  const host = process.env.SQL_HOST || '';
+  const user = process.env.SQL_USER || '';
+
+  const isDirectHost = /^db\.[a-z0-9]+\.supabase\.(co|com)$/i.test(host);
+  const isPoolerUser = /^postgres\.[a-z0-9]+$/i.test(user);
+
+  if (isDirectHost && isPoolerUser) {
+    const fixedUser = user.split('.')[0];
+    console.warn(
+      `[Supabase] ⚠️  Host direto com usuário de pooler detectado ` +
+      `(host=${host}, user=${user}). Corrigindo para user="${fixedUser}".`
+    );
+    return { host, user: fixedUser };
+  }
+
+  return null;
+}
+
 export async function resetCloudSqlPool(): Promise<void> {
   if (pgPool) {
     const oldPool = pgPool;
@@ -102,7 +144,10 @@ export async function safeCloudSqlQuery<T extends pg.QueryResultRow = any>(
   timeoutMs = 30000
 ): Promise<pg.QueryResult<T> | null> {
   const pool = getCloudSqlPool();
-  if (!pool) return null;
+  if (!pool) {
+    lastQueryError = 'Supabase não configurado (SQL_HOST/SQL_USER/SQL_PASSWORD ausentes)';
+    return null;
+  }
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -110,9 +155,18 @@ export async function safeCloudSqlQuery<T extends pg.QueryResultRow = any>(
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Cloud SQL query timed out')), timeoutMs)
       );
-      return await Promise.race([queryPromise, timeoutPromise]);
+      const result = await Promise.race([queryPromise, timeoutPromise]);
+      lastQueryError = null;
+      return result;
     } catch (err: any) {
       const msg = err?.message || '';
+
+      // Registra o motivo mesmo em falhas não recuperáveis. Sem isso, uma
+      // falha de autenticação retornava null silenciosamente e o /api/health
+      // reportava `erroCarregamento: null` — sem nenhuma pista do motivo.
+      // Foi o que aconteceu no Render: host direto + usuário de pooler.
+      lastQueryError = msg;
+
       const isConnectionIssue =
         msg.includes('Connection terminated') ||
         msg.includes('timed out') ||
@@ -120,6 +174,17 @@ export async function safeCloudSqlQuery<T extends pg.QueryResultRow = any>(
         err?.code === 'ECONNRESET' ||
         err?.code === '57P01' ||
         err?.code === 'ETIMEDOUT';
+
+      // Falha de autenticação não adianta retry: a configuração está errada.
+      if (msg.includes('password authentication failed')) {
+        console.error(`[CloudSQL Query] Autenticação recusada: ${msg}`);
+        console.error(
+          '[CloudSQL Query] Verifique SQL_USER e SQL_PASSWORD no painel do serviço. ' +
+          'Em host direto (db.<ref>.supabase.co) o usuário deve ser "postgres", ' +
+          'sem o sufixo do projeto.'
+        );
+        return null;
+      }
 
       if (isConnectionIssue) {
         await resetCloudSqlPool();
@@ -186,7 +251,22 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
         undefined,
         35000
       );
-      if (res && res.rows.length > 0 && res.rows[0]?.data) {
+
+      // res === null significa que a consulta falhou. safeCloudSqlQuery já
+      // guardou o motivo em lastQueryError; sem este early-return o fluxo
+      // continuava sem erro e o health check reportava null.
+      if (res === null) {
+        bootLoadError =
+          lastQueryError ||
+          'A consulta ao Supabase falhou sem retornar erro detalhado.';
+        console.warn(`[CloudSQL] Não foi possível consultar o snapshot: ${bootLoadError}`);
+        if (attempt < 4) {
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+        continue;
+      }
+
+      if (res.rows.length > 0 && res.rows[0]?.data) {
         const raw = Buffer.from(res.rows[0].data, 'base64');
         // Detect gzip magic bytes (1f 8b) and decompress if needed
         let buf: Buffer;
@@ -230,10 +310,14 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
         return null;
       }
     } catch (err: any) {
-      // O último erro é preservado para o /api/health. Sem isso, um deploy que
-      // falha em conectar só mostrava "banco vazio" no health check, sem dizer
-      // que a conexão era o problema — foi o que aconteceu no Render em 08/10.
-      bootLoadError = `Tentativa ${attempt}/4: ${err?.message || String(err)}`;
+      // O motivo vem do safeCloudSqlQuery quando ele falhou, ou da exceção
+      // quando o erro foi na descompressão/leitura do blob.
+      bootLoadError =
+        (err?.message && !/^Timeout/.test(err.message)
+          ? `${err.message}`
+          : null) ||
+        lastQueryError ||
+        'Erro desconhecido ao carregar o snapshot.';
       console.warn(`[CloudSQL] Attempt ${attempt}/4 could not load snapshot:`, err?.message || err);
     }
 
