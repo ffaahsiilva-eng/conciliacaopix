@@ -237,6 +237,10 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
       if (result) {
         knownHealthyRawBytes = buffer.length;
         console.log(`[CloudSQL] ✅ Saved: ${buffer.length} raw → ${compressed.length} gzip → ${b64.length} b64 (attempt ${attempt})`);
+        // Só grava histórico depois que o slot principal foi salvo com
+        // sucesso: um histórico de um snapshot que não substituiu o atual
+        // não serve como ponto de retorno.
+        saveSnapshotToHistory(buffer, b64);
         return; // SUCCESS
       }
 
@@ -255,6 +259,205 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
 
   // All 3 attempts failed — this is critical
   console.error(`[CloudSQL] ❌ CRITICAL: All 3 save attempts failed! Last error: ${lastError}`);
+}
+
+// ============================================================================
+// HISTÓRICO DE SNAPSHOTS NO SUPABASE
+//
+// O slot `main_db` é único e sobrescrito a cada gravação. Se o blob for
+// corrompido, ou se um bug de migração escrever sobre o banco, não há para
+// onde voltar. O histórico guarda os N snapshots anteriores, permitindo
+// restaurar um ponto anterior.
+//
+// Cada snapshot ocupa ~3MB (base64 de gzip). Com 10 cópias, ~30MB —
+// tranquilo no free tier de 500MB do Supabase.
+// ============================================================================
+
+const HISTORY_RETENTION = 10;
+const HISTORY_MIN_INTERVAL_MS = 60 * 60 * 1000; // no máximo 1 registro por hora
+let lastHistorySaveMs = 0;
+
+export async function saveSnapshotToHistory(
+  rawBuffer: Buffer,
+  b64: string,
+  reason = 'auto'
+): Promise<void> {
+  // Throttle: não faz sentido guardar 200 cópias do mesmo estado numa hora
+  // de atividade normal.
+  const now = Date.now();
+  if (now - lastHistorySaveMs < HISTORY_MIN_INTERVAL_MS) return;
+
+  try {
+    // Garante que a tabela existe (idempotente, barato)
+    await safeCloudSqlQuery(
+      `CREATE TABLE IF NOT EXISTS system_snapshots_history (
+         id           BIGSERIAL PRIMARY KEY,
+         snapshot_key TEXT        NOT NULL,
+         reason       TEXT        NOT NULL DEFAULT 'auto',
+         byte_size    INTEGER     NOT NULL,
+         raw_size     INTEGER     NOT NULL,
+         data         TEXT        NOT NULL,
+         created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+       )`,
+      undefined,
+      15000
+    );
+
+    const result = await safeCloudSqlQuery(
+      `INSERT INTO system_snapshots_history (snapshot_key, reason, byte_size, raw_size, data)
+       VALUES ('main_db', $1, $2, $3, $4)`,
+      [reason, b64.length, rawBuffer.length, b64],
+      45000
+    );
+
+    if (!result) {
+      console.warn('[Historico] Nao foi possivel gravar o snapshot no historico.');
+      return;
+    }
+
+    lastHistorySaveMs = now;
+    console.log(`[Historico] ✅ Snapshot arquivado (${(b64.length / 1048576).toFixed(2)} MB)`);
+
+    // Rotação: mantém os N mais recentes
+    await pruneSnapshotHistory();
+  } catch (err: any) {
+    // Falha no histórico nunca pode derrubar a gravação do slot principal
+    console.warn('[Historico] Falha ao arquivar snapshot:', err?.message || err);
+  }
+}
+
+async function pruneSnapshotHistory(): Promise<void> {
+  try {
+    const res = await safeCloudSqlQuery<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM system_snapshots_history`,
+      undefined,
+      15000
+    );
+    const total = res?.rows?.[0]?.n ?? 0;
+    if (total <= HISTORY_RETENTION) return;
+
+    const toRemove = total - HISTORY_RETENTION;
+    await safeCloudSqlQuery(
+      `DELETE FROM system_snapshots_history
+        WHERE id IN (
+          SELECT id FROM system_snapshots_history
+           ORDER BY created_at ASC
+           LIMIT $1
+        )`,
+      [toRemove],
+      20000
+    );
+    console.log(`[Historico] Rotação: ${toRemove} snapshot(s) antigo(s) removido(s).`);
+  } catch (err: any) {
+    console.warn('[Historico] Falha na rotação:', err?.message || err);
+  }
+}
+
+/** Lista os snapshots do histórico (sem o campo `data`, que é pesado). */
+export async function listSnapshotHistory(): Promise<
+  { id: string; reason: string; byteSize: number; rawSize: number; createdAt: string }[]
+> {
+  const res = await safeCloudSqlQuery<{
+    id: string;
+    reason: string;
+    byte_size: number;
+    raw_size: number;
+    created_at: Date;
+  }>(
+    `SELECT id, reason, byte_size, raw_size, created_at
+       FROM system_snapshots_history
+      ORDER BY created_at DESC
+      LIMIT $1`,
+    [HISTORY_RETENTION],
+    20000
+  );
+  if (!res) return [];
+  return res.rows.map((r) => ({
+    id: String(r.id),
+    reason: r.reason,
+    byteSize: r.byte_size,
+    rawSize: r.raw_size,
+    createdAt: new Date(r.created_at).toISOString(),
+  }));
+}
+
+/** Baixa e descomprime um snapshot do histórico. Retorna null se não existir. */
+export async function loadSnapshotFromHistory(
+  id: string
+): Promise<Buffer | null> {
+  const res = await safeCloudSqlQuery<{ data: string }>(
+    `SELECT data FROM system_snapshots_history WHERE id = $1`,
+    [id],
+    45000
+  );
+  if (!res || res.rows.length === 0 || !res.rows[0].data) return null;
+
+  const raw = Buffer.from(res.rows[0].data, 'base64');
+  if (raw.length >= 2 && raw[0] === 0x1f && raw[1] === 0x8b) {
+    return gunzipSync(raw);
+  }
+  return raw;
+}
+
+/**
+ * Substitui o banco em memória pelo conteúdo de um snapshot.
+ *
+ * Só grava no disco local — enviar ao Supabase é responsabilidade do
+ * chamador (persistDatabase), para que uma restauração não seja
+ * imediatamente sobrescrita pelo próximo snapshot automático.
+ */
+export function applySnapshotToDatabase(buffer: Buffer): void {
+  const tempFile = `${DB_FILE}.tmp`;
+  fs.writeFileSync(tempFile, buffer);
+  fs.renameSync(tempFile, DB_FILE);
+  markLocalFileFresh();
+
+  // Substitui o arquivo, não o dbInstance: o servidor em memória continua
+  // com o estado antigo até o próximo restart. Isso é intencional — troca
+  // "a quente" exigiria reinjetar todas as conexões ativas.
+  console.log(
+    `[DB] Snapshot aplicado no disco (${buffer.length} bytes). ` +
+    `Reinicie o servidor para que o app passe a operar sobre ele.`
+  );
+}
+
+/**
+ * Confere se um buffer é um banco SQLite utilizável: abre, verifica as
+ * tabelas esperadas e devolve a contagem de transações.
+ *
+ * Usado antes de sobrescrever o banco por um snapshot — um blob corrompido
+ * destruiria o estado atual sem nenhum aviso.
+ */
+export async function validateSnapshotBuffer(
+  buffer: Buffer
+): Promise<{ valid: boolean; error?: string; transactionCount?: number }> {
+  let probe: Database | undefined;
+  try {
+    const init = typeof initSqlJs === 'function' ? initSqlJs : (initSqlJs as any)?.default || initSqlJs;
+    const SQL = await init();
+    const db: Database = new SQL.Database(buffer);
+    probe = db;
+
+    const tables = db.exec(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
+    );
+    const names = tables[0] ? tables[0].values.map((r: any) => r[0]) : [];
+
+    // O snapshot precisa ter o schema do app; sem transactions não é
+    // um banco utilizável.
+    if (!names.includes('transactions')) {
+      return { valid: false, error: 'Snapshot inválido: sem a tabela transactions.' };
+    }
+
+    const count = db.exec(`SELECT COUNT(*) FROM transactions`);
+    const transactionCount = count[0] ? Number(count[0].values[0][0]) : 0;
+
+    return { valid: true, transactionCount };
+  } catch (err: any) {
+    return { valid: false, error: `Snapshot corrompido: ${err?.message || err}` };
+  } finally {
+    try { probe?.close(); } catch (_) {}
+  }
 }
 
 

@@ -8,7 +8,7 @@ import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import path from 'path';
 import fs from 'fs';
-import { getDatabase, persistDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery, startBackupScheduler, listLocalBackups, createLocalBackup } from './server/db.js';
+import { getDatabase, persistDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery, startBackupScheduler, listLocalBackups, createLocalBackup, listSnapshotHistory, loadSnapshotFromHistory, applySnapshotToDatabase, validateSnapshotBuffer } from './server/db.js';
 import { parseOfx, isBalanceLine } from './server/parsers/ofxParser.js';
 import { parseCsvStatement } from './server/parsers/csvParser.js';
 
@@ -3053,6 +3053,68 @@ app.get('/api/database/backups', async (req, res) => {
       location: 'data/backups/',
     });
   } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Lista os backups guardados no Supabase (histórico de snapshots)
+app.get('/api/database/backups/cloud', async (req, res) => {
+  try {
+    const snapshots = await listSnapshotHistory();
+    res.json({
+      success: true,
+      count: snapshots.length,
+      snapshots,
+      retention: 10,
+      note: 'Cada snapshot ocupa ~3MB. Retenção automática mantém os 10 mais recentes.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Restaura um snapshot do histórico do Supabase.
+// Substitui o banco atual pelo conteúdo do snapshot e mantém uma cópia do
+// estado atual antes de sobrescrever, para que a restauração seja reversível.
+app.post('/api/database/backups/cloud/restore/:id', async (req, res) => {
+  try {
+    const actorUser = req.body?.actorUser;
+    if (!actorUser) {
+      return res.status(401).json({ error: 'Operador não identificado.' });
+    }
+
+    const snapshotId = req.params.id;
+    const buffer = await loadSnapshotFromHistory(snapshotId);
+    if (!buffer || buffer.length < 1000) {
+      return res.status(404).json({ error: 'Snapshot não encontrado no histórico do Supabase.' });
+    }
+
+    // Valida que é um SQLite legível antes de qualquer escrita
+    const check = await validateSnapshotBuffer(buffer);
+    if (!check.valid) {
+      return res.status(400).json({ error: check.error || 'Snapshot inválido.' });
+    }
+
+    // Cria backup do estado atual antes de sobrescrever (reversibilidade)
+    createLocalBackup('pre-restore');
+
+    // Aplica o snapshot
+    applySnapshotToDatabase(buffer);
+
+    console.log(`[Restore] Snapshot ${snapshotId} restaurado por ${actorUser.name} (${buffer.length} bytes)`);
+
+    res.json({
+      success: true,
+      message:
+        `Snapshot restaurado: ${check.transactionCount} transações, ` +
+        `${(buffer.length / 1048576).toFixed(2)} MB. ` +
+        `Reinicie o servidor para que o app passe a operar sobre ele.`,
+      snapshotId,
+      size: buffer.length,
+      transactionCount: check.transactionCount,
+    });
+  } catch (err: any) {
+    console.error('[Restore] Falha:', err);
     res.status(500).json({ error: err.message });
   }
 });
