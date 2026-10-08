@@ -1,24 +1,44 @@
 <#
   backup-banco.ps1
-  Copia o banco de producao do Conciliapix para D:\Projetos Sistemas\_backups.
+  Copia o banco de producao do Conciliapix para D:\PIX\_backups-banco.
 
-  Seguro para rodar com o servidor no ar: o app usa sql.js e grava o banco de
-  forma atomica (escreve em .tmp e faz rename), entao o arquivo .sqlite esta
-  sempre em um estado completo e consistente.
+  Seguro para rodar com o servidor no ar: o app usa sql.js e grava o banco
+  de forma atomica (escreve em .tmp e faz rename), entao o arquivo .sqlite
+  esta sempre em um estado completo e consistente.
 
   Somente cria um novo backup quando o banco realmente mudou (comparacao de
-  hash), e mantem os N mais recentes,-rotacionando os antigos.
+  hash), e mantem os N mais recentes, rotacionando os antigos.
+
+  Este script e a UNICA camada de backup que sobrevive a perda do disco local:
+  ele copia para fora do projeto. As outras duas camadas (data/backups/ dentro
+  do projeto e o snapshot no Cloud SQL) vivem no mesmo disco do app.
 #>
 [CmdletBinding()]
 param(
     [int]$Manter = 60,
-    [string]$Origem = "D:\Projetos Sistemas\Conciliapix\data\conciliapix.sqlite",
-    [string]$Destino = "D:\Projetos Sistemas\_backups"
+    # Origem e destino sao detectados automaticamente quando omitidos, para o
+    # script funcionar mesmo que o projeto seja movido de pasta.
+    [string]$Origem = "",
+    [string]$Destino = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-$LogDir = "D:\Projetos Sistemas\_backups\logs"
+# --- 0. Detecta caminhos a partir da localizacao deste script ---
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path           # .kilo\scripts
+$ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)      # raiz do projeto
+
+if ([string]::IsNullOrWhiteSpace($Origem)) {
+    $Origem = Join-Path $ProjectRoot "data\conciliapix.sqlite"
+}
+if ([string]::IsNullOrWhiteSpace($Destino)) {
+    # Fora do projeto: uma pasta de backup no mesmo drive sobrevive a
+    # git reset, git clean, reclone e sobrescrita do arquivo do banco.
+    $drive = (Split-Path -Qualifier $ProjectRoot)
+    $Destino = Join-Path $drive "_backups-banco"
+}
+
+$LogDir = Join-Path $Destino "logs"
 if (-not (Test-Path -LiteralPath $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
