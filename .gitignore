@@ -7,4 +7,14 @@ coverage/
 .env*
 !.env.example
 projeto-completo.zip
-conciliacaopix/
+concilacaopix/
+
+# Banco de producao: nunca versionar.
+# O arquivo e reescrito a cada gravacao, entao qualquer clone/reset/checkout
+# sobrescreveria os dados mais recentes. A protecao oficial e o backup
+# automatico em D:\Projetos Sistemas\_backups (tarefa "Conciliapix - Backup Banco").
+data/*.sqlite
+data/*.sqlite-journal
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/*.tmp
