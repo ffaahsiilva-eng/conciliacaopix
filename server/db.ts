@@ -616,6 +616,33 @@ function initSchema(db: Database): void {
     db.run(`ALTER TABLE transactions ADD COLUMN locked_by_session_id TEXT`);
   } catch (_) {}
 
+  // Limpeza de locks de sessão órfãos.
+  //
+  // Bug corrigido em 8eeb5df: os endpoints que reabrem transações limpavam
+  // locked_at, locked_by_user_id e locked_by_user_name, mas deixavam
+  // locked_by_session_id apontando para a sessão que já não existia. Na UI,
+  // essa transação era classificada como "travada por outra sessão" e ficava
+  // impossível de selecionar.
+  //
+  // Esta migração zera o campo nas transações pendentes cuja sessão não está
+  // mais IN_PROGRESS. É segura por construção:
+  //   - só toca em status = 'PENDING' (transações conciliadas mantêm o vínculo);
+  //   - só toca quando o locked_by_session_id não corresponde a nenhuma sessão
+  //     ativa, então sessões em andamento continuam intactas;
+  //   - o padrão try/catch do arquivo garante que uma falha aqui não derrube o
+  //     startup — no pior caso o problema persiste, como estava antes.
+  try {
+    db.run(`
+      UPDATE transactions
+         SET locked_by_session_id = NULL
+       WHERE locked_by_session_id IS NOT NULL
+         AND status = 'PENDING'
+         AND locked_by_session_id NOT IN (
+               SELECT id FROM reconciliation_sessions WHERE status = 'IN_PROGRESS'
+         )
+    `);
+  } catch (_) {}
+
   // Clean counterparty_name on existing transactions if it contains raw PIX memo
   try {
     const rawTxs = db.exec("SELECT id, counterparty_name FROM transactions WHERE counterparty_name LIKE '%PIX%'");
