@@ -206,6 +206,7 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
           const ageSec = Number(res.rows[0]?.age_seconds);
           if (Number.isFinite(ageSec)) {
             cloudSnapshotUpdatedMs = Date.now() - ageSec * 1000;
+            bootSnapshotAgeMin = ageSec / 60;
             console.log(
               `[CloudSQL] Snapshot com ${(ageSec / 60).toFixed(1)} min de idade ` +
               `(${buf.length} bytes).`
@@ -559,6 +560,28 @@ export async function validateSnapshotBuffer(
 
 
 
+// Estado do boot, para diagnóstico via /api/health.
+// Sem isso, um deploy que sobe com o banco vazio não deixa rastro de qual
+// caminho foi seguido (snapshot do Supabase, arquivo local ou banco novo).
+let bootSource: 'supabase' | 'local' | 'novo' = 'novo';
+let bootSnapshotBytes = 0;
+let bootSnapshotAgeMin = 0;
+
+export function getBootDiagnostics() {
+  return {
+    origem: bootSource,
+    snapshotBytes: bootSnapshotBytes,
+    snapshotIdadeMin: Math.round(bootSnapshotAgeMin * 10) / 10,
+    localExiste: fs.existsSync(DB_FILE),
+    localBytes: (() => {
+      try { return fs.existsSync(DB_FILE) ? fs.statSync(DB_FILE).size : 0; } catch { return 0; }
+    })(),
+    cwd: process.cwd(),
+    nodeEnv: process.env.NODE_ENV || '(nao definido)',
+    render: !!process.env.RENDER,
+  };
+}
+
 export async function getDatabase(): Promise<Database> {
   if (dbInstance) {
     return dbInstance;
@@ -649,6 +672,8 @@ export async function getDatabase(): Promise<Database> {
               );
             }
             instance = new SQL.Database(cloudBuffer);
+            bootSource = 'supabase';
+            bootSnapshotBytes = cloudBuffer.length;
             // Backup local antes de sobrescrever: o arquivo atual pode ser
             // mais recente que o snapshot ou estar corrompido.
             try {
@@ -673,6 +698,8 @@ export async function getDatabase(): Promise<Database> {
         const fileBuffer = fs.readFileSync(DB_FILE);
         if (fileBuffer.length > 0) {
           instance = new SQL.Database(fileBuffer);
+          bootSource = 'local';
+          bootSnapshotBytes = fileBuffer.length;
           console.log(`[DB] Database restored from local cached file (${fileBuffer.length} bytes).`);
         }
       } catch (err) {

@@ -8,7 +8,7 @@ import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import path from 'path';
 import fs from 'fs';
-import { getDatabase, persistDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery, startBackupScheduler, listLocalBackups, createLocalBackup, listSnapshotHistory, loadSnapshotFromHistory, applySnapshotToDatabase, validateSnapshotBuffer } from './server/db.js';
+import { getDatabase, persistDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery, startBackupScheduler, listLocalBackups, createLocalBackup, listSnapshotHistory, loadSnapshotFromHistory, applySnapshotToDatabase, validateSnapshotBuffer, getBootDiagnostics } from './server/db.js';
 import { parseOfx, isBalanceLine } from './server/parsers/ofxParser.js';
 import { parseCsvStatement } from './server/parsers/csvParser.js';
 
@@ -3114,9 +3114,11 @@ app.get('/api/health', async (req, res) => {
     if ((drivers?.n ?? 0) === 0) {
       result.status = 'erro';
       result.problema =
-        'O banco carregou sem nenhum motorista. Verifique se o snapshot no ' +
-        'Supabase é de uma instância com dados.';
+        'O banco carregou sem nenhum motorista. Veja o campo "boot" para ' +
+        'saber qual caminho o servidor usou para carregar os dados.';
     }
+
+    result.boot = getBootDiagnostics();
   } catch (err: any) {
     result.status = 'erro';
     result.problema = `Falha ao ler o banco: ${err?.message}`;
