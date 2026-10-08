@@ -221,9 +221,19 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
       if (res && res.rows.length === 0) {
         // Table exists and query succeeded, but no snapshot row yet
         console.log('[CloudSQL] Connected to Cloud SQL; no existing snapshot row found.');
+        bootLoadError = 'Conectou no Supabase, mas a tabela system_snapshots está vazia.';
+        return null;
+      }
+      if (res && res.rows.length > 0 && !res.rows[0]?.data) {
+        bootLoadError = 'A linha main_db existe mas o campo data está vazio.';
+        console.warn(`[CloudSQL] ${bootLoadError}`);
         return null;
       }
     } catch (err: any) {
+      // O último erro é preservado para o /api/health. Sem isso, um deploy que
+      // falha em conectar só mostrava "banco vazio" no health check, sem dizer
+      // que a conexão era o problema — foi o que aconteceu no Render em 08/10.
+      bootLoadError = `Tentativa ${attempt}/4: ${err?.message || String(err)}`;
       console.warn(`[CloudSQL] Attempt ${attempt}/4 could not load snapshot:`, err?.message || err);
     }
 
@@ -567,15 +577,24 @@ let bootSource: 'supabase' | 'local' | 'novo' = 'novo';
 let bootSnapshotBytes = 0;
 let bootSnapshotAgeMin = 0;
 
+// Motivo pelo qual o snapshot não pôde ser carregado, se for o caso.
+let bootLoadError: string | null = null;
+
 export function getBootDiagnostics() {
   return {
     origem: bootSource,
     snapshotBytes: bootSnapshotBytes,
     snapshotIdadeMin: Math.round(bootSnapshotAgeMin * 10) / 10,
+    erroCarregamento: bootLoadError,
     localExiste: fs.existsSync(DB_FILE),
     localBytes: (() => {
       try { return fs.existsSync(DB_FILE) ? fs.statSync(DB_FILE).size : 0; } catch { return 0; }
     })(),
+    // O host e a porta efetivos importam: SQL_PORT ausente assume 5432, e a
+    // porta errada no Supabase faz a conexão falhar silenciosamente.
+    sqlHost: process.env.SQL_HOST || '(ausente)',
+    sqlPort: process.env.SQL_PORT || '(ausente, assumindo 5432)',
+    sqlDb: process.env.SQL_DB_NAME || '(ausente, assumindo postgres)',
     cwd: process.cwd(),
     nodeEnv: process.env.NODE_ENV || '(nao definido)',
     render: !!process.env.RENDER,
@@ -712,6 +731,37 @@ export async function getDatabase(): Promise<Database> {
     const dbToUse: Database = instance || new SQL.Database();
     dbInstance = dbToUse;
 
+    // ⚠️  PROTEÇÃO CRÍTICA — nunca sobrescrever o snapshot do Supabase com um
+    // banco vazio.
+    //
+    // O que acontecia: se a conexão com o Supabase falhasse (rede, DNS, config),
+    // o boot caía até aqui, criava um SQLite vazio e o persistDatabaseSync()
+    // logo abaixo gravava esse vazio por cima do snapshot bom. O resultado era
+    // um deploy que abria zerado E destruía o ponto de recuperação — os dois
+    // piores cenários ao mesmo tempo. Foi exatamente o que aconteceu no
+    // Render em 08/10 (boot.origem = "novo").
+    //
+    // Um banco recém-criado em produção é sempre um sinal de falha: o
+    // arquivo local não existe em filesystem efêmero, então a única fonte de
+    // dados é o Supabase. Se ele não respondeu, o certo é ficar indisponível
+    // com um erro explícito, não servir telas vazias.
+    if (isBrandNew && bootLoadError && getCloudSqlPool()) {
+      console.error(
+        '\n' +
+        '='.repeat(70) + '\n' +
+        '❌ BANCO DE PRODUÇÃO INACESSÍVEL — iniciando sem dados.\n' +
+        '\n' +
+        `Motivo: ${bootLoadError}\n` +
+        '\n' +
+        'O Supabase está configurado mas o snapshot não pôde ser lido.\n' +
+        'Este banco NÃO será enviado ao Supabase (o snapshot atual está\n' +
+        'preservado), mas o app vai funcionar sem dados até a conexão voltar.\n' +
+        '\n' +
+        'Verifique /api/health para o detalhe e o painel do Render para logs.\n' +
+        '='.repeat(70) + '\n'
+      );
+    }
+
     // Backup do estado carregado, ANTES de qualquer migração. Se uma migração
     // futura corromper o schema, existe aqui um ponto de retorno do estado
     // exato que foi carregado no boot.
@@ -720,9 +770,11 @@ export async function getDatabase(): Promise<Database> {
     // Initialize schemas, indexes, migrations, and bank catalogs
     initSchema(dbToUse);
 
-    // Only sync to Cloud SQL on fresh creation if it is truly brand new
-    // NEVER overwrite Cloud SQL on boot if we restored existing data
-    if (isBrandNew) {
+    // Sincroniza com o Supabase apenas quando não há dados de produção
+    // para preservar. Sem essa guarda, uma falha de conexão momentânea
+    // apagava o snapshot bom.
+    if (isBrandNew && !bootLoadError) {
+      // Primeiro uso real: banco novo de verdade, sem snapshot anterior.
       persistDatabaseSync();
     }
 
