@@ -13,6 +13,10 @@ const DB_FILE = path.join(DB_DIR, 'conciliapix.sqlite');
 
 let dbInstance: Database | null = null;
 let dbInitPromise: Promise<Database> | null = null;
+
+// Instância de sql.js pronta, reaproveitada pelas validações de snapshot para
+// não recarregar o wasm a cada checagem.
+let bootSqlFactory: any = null;
 let saveDebounceTimer: NodeJS.Timeout | null = null;
 let pgPool: pg.Pool | null = null;
 let isSavingToCloudSql = false;
@@ -163,8 +167,22 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
   // Try up to 4 times with backoff to handle cold start when Cloud SQL is spinning up from scale-to-zero
   for (let attempt = 1; attempt <= 4; attempt++) {
     try {
-      const res = await safeCloudSqlQuery<{ data: string; updated_at: Date }>(
-        `SELECT data, updated_at FROM system_snapshots WHERE key = 'main_db'`,
+      // A idade do snapshot é calculada pelo PRÓPRIO Postgres (em UTC), não
+      // comparando `updated_at` com o relógio do processo.
+      //
+      // Por quê: a coluna updated_at é TIMESTAMP WITHOUT TIME ZONE e o
+      // Postgres a grava com NOW(), que usa o fuso do SERVIDOR do banco
+      // (UTC-3). O driver pg converte esse valor usando o fuso LOCAL do
+      // processo — que no Render é UTC. A diferença de 3h fazia o Render
+      // concluir que o snapshot era "3h mais velho" e descartar o banco
+      // bom, subiendo com um SQLite vazio.
+      //
+      // Pedir a idade direto ao banco elimina a conversão de fuso: o que
+      // importa não é o instante absoluto, mas se o snapshot é mais novo
+      // que o arquivo local.
+      const res = await safeCloudSqlQuery<{ data: string; age_seconds: string | null }>(
+        `SELECT data, EXTRACT(EPOCH FROM (NOW() - updated_at)) AS age_seconds
+           FROM system_snapshots WHERE key = 'main_db'`,
         undefined,
         35000
       );
@@ -181,9 +199,20 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
         if (buf.length > 0) {
           // Track the raw SQLite bytes for consistent Safety Shield comparisons
           knownHealthyRawBytes = buf.length;
-          cloudSnapshotUpdatedMs = res.rows[0]?.updated_at
-            ? new Date(res.rows[0].updated_at).getTime()
-            : 0;
+
+          // Converte a idade (em segundos) em um instante absoluto usando o
+          // relógio do próprio processo. Assim os dois lados da comparação
+          // usam a mesma base, sem depender do fuso do Postgres.
+          const ageSec = Number(res.rows[0]?.age_seconds);
+          if (Number.isFinite(ageSec)) {
+            cloudSnapshotUpdatedMs = Date.now() - ageSec * 1000;
+            console.log(
+              `[CloudSQL] Snapshot com ${(ageSec / 60).toFixed(1)} min de idade ` +
+              `(${buf.length} bytes).`
+            );
+          } else {
+            cloudSnapshotUpdatedMs = 0;
+          }
           console.log(`[CloudSQL] Loaded database snapshot (${buf.length} bytes) from Google Cloud SQL.`);
           return buf;
         }
@@ -446,6 +475,50 @@ export function applySnapshotToDatabase(buffer: Buffer): void {
 }
 
 /**
+ * Confere se um buffer de snapshot tem conteúdo aproveitável.
+ *
+ * Versão síncrona usada no boot, onde já existe uma instância de sql.js
+ * pronta e não vale abrir uma segunda. Um snapshot sem tabela
+ * `transactions` populadas não deve substituir um banco com dados.
+ */
+export function validateSnapshotBufferSync(
+  buffer: Buffer,
+  SQLFactory?: any
+): { usable: boolean; motivo?: string; transacoes: number } {
+  let probe: Database | undefined;
+  try {
+    const factory = SQLFactory || bootSqlFactory;
+    if (!factory) {
+      return { usable: false, motivo: 'sql.js não inicializado', transacoes: 0 };
+    }
+    const db: Database = new factory.Database(buffer);
+    probe = db;
+
+    const tables = db.exec(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
+    );
+    const names = tables[0] ? tables[0].values.map((r: any) => r[0]) : [];
+
+    if (!names.includes('transactions')) {
+      return { usable: false, motivo: 'sem a tabela transactions', transacoes: 0 };
+    }
+
+    const count = db.exec(`SELECT COUNT(*) FROM transactions`);
+    const transacoes = count[0] ? Number(count[0].values[0][0]) : 0;
+
+    if (transacoes === 0) {
+      return { usable: false, motivo: 'tabela transactions vazia', transacoes: 0 };
+    }
+
+    return { usable: true, transacoes };
+  } catch (err: any) {
+    return { usable: false, motivo: `ilegível: ${err?.message || err}`, transacoes: 0 };
+  } finally {
+    try { probe?.close(); } catch (_) {}
+  }
+}
+
+/**
  * Confere se um buffer é um banco SQLite utilizável: abre, verifica as
  * tabelas esperadas e devolve a contagem de transações.
  *
@@ -501,6 +574,7 @@ export async function getDatabase(): Promise<Database> {
 
     const init = typeof initSqlJs === 'function' ? initSqlJs : (initSqlJs as any)?.default || initSqlJs;
     const SQL = await init();
+    bootSqlFactory = SQL;
 
     let instance: Database | undefined;
 
@@ -517,35 +591,76 @@ export async function getDatabase(): Promise<Database> {
       const cloudBuffer = await loadSnapshotFromCloudSql();
 
       if (cloudBuffer && cloudBuffer.length > 0) {
-        // Compara a idade das duas cópias. Uma diferença pequena (< 2 min) é
-        // ruído de granularidade de `updated_at` do Postgres e não justifica
-        // descartar o snapshot do Cloud SQL.
-        const localIsNewer =
-          localFileLastWriteMs > 0 &&
-          cloudSnapshotUpdatedMs > 0 &&
-          localFileLastWriteMs > cloudSnapshotUpdatedMs + 120_000;
+        // Decide se o snapshot do Supabase tem conteúdo real antes de
+        // descartar o arquivo local.
+        //
+        // Um snapshot "vazio" (banco novo, sem tabelas populadas) não pode
+        // substituir um banco com dados. No Render isso acontecia a cada
+        // deploy: o filesystem é efêmero, o app subia sem Drivers e a
+        // primeira gravação sobrescrevia o snapshot bom do Supabase com um
+        // banco vazio. Era a segunda causa de deploy zerado.
+        const snapshotUsable = validateSnapshotBufferSync(cloudBuffer);
 
-        if (localIsNewer) {
-          console.warn(
-            `[DB] ⚠️  Arquivo local é mais recente que o snapshot do Cloud SQL ` +
-            `(local: ${new Date(localFileLastWriteMs).toISOString()}, ` +
-            `cloud: ${new Date(cloudSnapshotUpdatedMs).toISOString()}). ` +
-            `Mantendo o local para não perder trabalho recente.`
+        if (!snapshotUsable.usable) {
+          console.error(
+            `[DB] ❌ Snapshot do Supabase parece VAZIO (${snapshotUsable.motivo}). ` +
+            `Mantendo o arquivo local para não perder dados.`
           );
-          // Não usa o snapshot da nuvem; cai no passo 2 (restaurar do local).
+          // Cai no passo 2 (restaurar do local).
         } else {
-          instance = new SQL.Database(cloudBuffer);
-          // Backup local antes de sobrescrever: o arquivo atual pode ser mais
-          // recente que o snapshot (caso "localIsNewer") ou estar corrompido.
-          try {
-            if (fs.existsSync(DB_FILE) && localFileLastWriteMs > cloudSnapshotUpdatedMs) {
-              fs.copyFileSync(DB_FILE, `${DB_FILE}.prev`);
+          // O arquivo local só "vence" o snapshot se tiver DADOS e for
+          // realmente mais recente.
+          //
+          // Sem a checagem de conteúdo, o deploy no Render entrava em loop
+          // de banco vazio: o container tem filesystem efêmero, o arquivo
+          // local acabou de ser criado (mtime = agora), então era sempre
+          // "mais novo" que o snapshot de 10 minutos atrás — e o app
+          // descartava o snapshot bom, subia vazio e na primeira gravação
+          // sobrescrevia o snapshot do Supabase com o vazio.
+          let localHasData = false;
+          if (fs.existsSync(DB_FILE)) {
+            try {
+              const localBuf = fs.readFileSync(DB_FILE);
+              if (localBuf.length > 1000) {
+                localHasData = validateSnapshotBufferSync(localBuf).usable;
+              }
+            } catch (_) {}
+          }
+
+          const localIsNewer =
+            localHasData &&
+            localFileLastWriteMs > 0 &&
+            cloudSnapshotUpdatedMs > 0 &&
+            localFileLastWriteMs > cloudSnapshotUpdatedMs + 120_000;
+
+          if (localIsNewer) {
+            console.warn(
+              `[DB] ⚠️  Arquivo local tem dados e é mais recente que o snapshot ` +
+              `do Supabase (local: ${new Date(localFileLastWriteMs).toISOString()}, ` +
+              `snapshot: ${new Date(cloudSnapshotUpdatedMs).toISOString()}). ` +
+              `Mantendo o local.`
+            );
+            // Não usa o snapshot; cai no passo 2 (restaurar do local).
+          } else {
+            if (!localHasData) {
+              console.log(
+                `[DB] Arquivo local sem dados (${localFileLastWriteMs > 0 ? 'recém-criado' : 'inexistente'}). ` +
+                `Usando o snapshot do Supabase.`
+              );
             }
-          } catch (_) {}
-          try {
-            fs.writeFileSync(DB_FILE, cloudBuffer);
-          } catch (_) {}
-          console.log(`[DB] Database successfully restored from Cloud SQL permanent storage (${cloudBuffer.length} bytes).`);
+            instance = new SQL.Database(cloudBuffer);
+            // Backup local antes de sobrescrever: o arquivo atual pode ser
+            // mais recente que o snapshot ou estar corrompido.
+            try {
+              if (fs.existsSync(DB_FILE) && localFileLastWriteMs > cloudSnapshotUpdatedMs) {
+                fs.copyFileSync(DB_FILE, `${DB_FILE}.prev`);
+              }
+            } catch (_) {}
+            try {
+              fs.writeFileSync(DB_FILE, cloudBuffer);
+            } catch (_) {}
+            console.log(`[DB] Database restored from Supabase snapshot (${cloudBuffer.length} bytes, ${snapshotUsable.transacoes} transações).`);
+          }
         }
       }
     } catch (err) {
