@@ -55,8 +55,32 @@ export function getCloudSqlPool(): pg.Pool | null {
     }
     return pgPool;
   }
+
+  // Sem as variáveis do Supabase, o app não tem onde persistir. Em deploy
+  // (Render, Vercel) isso significa banco vazio a cada restart, sem nenhum
+  // aviso visível — o app só mostrava telas sem dados. O log abaixo deixa o
+  // diagnóstico explícito.
+  if (!isVercel && !databaseMisconfigWarningShown) {
+    databaseMisconfigWarningShown = true;
+    console.warn(
+      '\n' +
+      '='.repeat(70) + '\n' +
+      '⚠️  SUPABASE NÃO CONFIGURADO — o banco ficará VAZIO neste deploy.\n' +
+      '\n' +
+      'Defina estas variáveis no painel do serviço (Render/Vercel) e reinicie:\n' +
+      '  SQL_HOST, SQL_PORT, SQL_USER, SQL_PASSWORD, SQL_DB_NAME\n' +
+      '\n' +
+      'O arquivo .env é ignorado pelo git e NÃO é lido em deploy.\n' +
+      'Sem essas variáveis, loadSnapshotFromCloudSql() é um no-op e o app\n' +
+      'sobe com um banco SQLite vazio a cada restart.\n' +
+      '='.repeat(70) + '\n'
+    );
+  }
+
   return null;
 }
+
+let databaseMisconfigWarningShown = false;
 
 export async function resetCloudSqlPool(): Promise<void> {
   if (pgPool) {

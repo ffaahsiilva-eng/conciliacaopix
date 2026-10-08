@@ -3035,6 +3035,97 @@ app.post('/api/database/clean', async (req, res) => {
 });
 
 // ============================================================================
+// DIAGNÓSTICO DE SAÚDE
+//
+// Diagnostica em um comando por que um deploy pode estar exibindo banco
+// vazio: variáveis do Supabase ausentes, snapshot corrompido, banco local
+// sem conteúdo, etc.
+// ============================================================================
+
+app.get('/api/health', async (req, res) => {
+  const supabaseConfigured = Boolean(
+    process.env.SQL_HOST && process.env.SQL_USER && process.env.SQL_PASSWORD
+  );
+
+  const result: any = {
+    status: 'ok',
+    supabaseConfigured,
+    env: {
+      SQL_HOST: process.env.SQL_HOST ? 'configurada' : 'AUSENTE',
+      SQL_PORT: process.env.SQL_PORT || 'AUSENTE (assumindo 5432)',
+      SQL_USER: process.env.SQL_USER ? 'configurado' : 'AUSENTE',
+      SQL_PASSWORD: process.env.SQL_PASSWORD ? 'configurada' : 'AUSENTE',
+      SQL_DB_NAME: process.env.SQL_DB_NAME || 'AUSENTE (assumindo postgres)',
+      VITE_API_URL: process.env.VITE_API_URL || 'AUSENTE',
+    },
+  };
+
+  if (!supabaseConfigured) {
+    result.status = 'erro';
+    result.problema =
+      'O Supabase não está configurado neste ambiente. Configure SQL_HOST, ' +
+      'SQL_USER, SQL_PASSWORD (e opcionalmente SQL_PORT/SQL_DB_NAME) no painel ' +
+      'do serviço. Sem isso o banco fica vazio a cada restart.';
+    return res.json(result);
+  }
+
+  // Snapshot no Supabase
+  try {
+    const snap = await safeCloudSqlQuery<{ data: string; updated_at: Date }>(
+      `SELECT data, updated_at FROM system_snapshots WHERE key = 'main_db'`,
+      undefined,
+      30000
+    );
+    if (snap && snap.rows.length > 0 && snap.rows[0].data) {
+      result.snapshot = {
+        existe: true,
+        bytesBase64: snap.rows[0].data.length,
+        atualizadoEm: new Date(snap.rows[0].updated_at).toISOString(),
+      };
+    } else {
+      result.status = 'erro';
+      result.problema =
+        'Consegui conectar no Supabase, mas a tabela system_snapshots está ' +
+        'vazia. O banco de produção nunca foi enviado para lá.';
+    }
+  } catch (err: any) {
+    result.status = 'erro';
+    result.problema = `Falha ao consultar o snapshot no Supabase: ${err?.message}`;
+  }
+
+  // Conteúdo do banco em memória
+  try {
+    const db = await getDatabase();
+    const tx = await queryAll<{ status: string; n: number }>(
+      `SELECT status, COUNT(*) as n FROM transactions GROUP BY status`
+    );
+    const drivers = await queryOne<{ n: number }>(
+      `SELECT COUNT(*) as n FROM drivers`
+    );
+    result.conteudo = {
+      transacoesPorStatus: tx.reduce((acc, r) => {
+        acc[r.status] = r.n;
+        return acc;
+      }, {} as Record<string, number>),
+      totalTransacoes: tx.reduce((s, r) => s + r.n, 0),
+      motoristas: drivers?.n ?? 0,
+    };
+
+    if ((drivers?.n ?? 0) === 0) {
+      result.status = 'erro';
+      result.problema =
+        'O banco carregou sem nenhum motorista. Verifique se o snapshot no ' +
+        'Supabase é de uma instância com dados.';
+    }
+  } catch (err: any) {
+    result.status = 'erro';
+    result.problema = `Falha ao ler o banco: ${err?.message}`;
+  }
+
+  res.json(result);
+});
+
+// ============================================================================
 // BACKUPS AUTOMÁTICOS
 //
 // Rotas administrativas para inspecionar e forçar um backup. A restauração
