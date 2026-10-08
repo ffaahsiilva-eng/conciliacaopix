@@ -1,6 +1,7 @@
 import initSqlJs, { Database } from 'sql.js';
 import fs from 'fs';
 import path from 'path';
+import dns from 'dns';
 import pg from 'pg';
 import { gzipSync, gunzipSync } from 'zlib';
 
@@ -29,14 +30,40 @@ let lastQueryError: string | null = null;
 export function getCloudSqlPool(): pg.Pool | null {
   if (process.env.SQL_HOST && process.env.SQL_USER && process.env.SQL_PASSWORD) {
     if (!pgPool) {
-      // Corrige a combinação host direto + usuário de pooler, que o Render
-      // configura por engano com frequência (ver resolveSupabaseCredentials).
+      // Corrige as duas incompatibilidades mais comuns do Supabase:
+      // usuário de pooler em host direto, e host direto sem rota IPv6.
+      // Ver resolveSupabaseCredentials.
       const resolved = resolveSupabaseCredentials();
+      const effectiveHost = resolved?.host || process.env.SQL_HOST;
       const effectiveUser = resolved?.user || process.env.SQL_USER;
+      const effectivePort = resolved?.port || (process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432);
+
+      // Diagnóstico: registra quais IPs o host resolve. Sem isso, um
+      // ENETUNREACH IPv6 não deixa claro que o problema é de rota, não de
+      // senha ou configuração.
+      dns.lookup(effectiveHost, { all: true }, (err: any, addrs: any[]) => {
+        if (err) {
+          console.warn(`[Supabase] DNS não resolveu ${effectiveHost}: ${err.message}`);
+          return;
+        }
+        const hasV4 = addrs.some((a: any) => a.family === 4);
+        const hasV6 = addrs.some((a: any) => a.family === 6);
+        console.log(
+          `[Supabase] ${effectiveHost}:${effectivePort} -> ` +
+          `${hasV4 ? 'IPv4 ok' : 'SEM IPv4'}${hasV6 ? ', IPv6 ok' : ''}`
+        );
+        if (!hasV4) {
+          console.error(
+            `[Supabase] ❌ ${effectiveHost} não resolve em IPv4. Em containers sem rota ` +
+            `IPv6 a conexão falha com ENETUNREACH. Configure SQL_POOLER_HOST com o ` +
+            `host do Connection Pooler do Supabase.`
+          );
+        }
+      });
 
       pgPool = new Pool({
-        host: process.env.SQL_HOST,
-        port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432,
+        host: effectiveHost,
+        port: effectivePort,
         user: effectiveUser,
         password: process.env.SQL_PASSWORD,
         database: process.env.SQL_DB_NAME || 'postgres',
@@ -95,37 +122,80 @@ export function getCloudSqlPool(): pg.Pool | null {
 
 let databaseMisconfigWarningShown = false;
 
-// Detecta a incompatibilidade mais comum do Supabase: host direto
-// (db.<ref>.supabase.co) com usuário do pooler (postgres.<ref>).
+// ============================================================================
+// CORREÇÃO AUTOMÁTICA DAS CREDENCIAIS DO SUPABASE
 //
-// O Render painel costuma colar o host direto, mas o Connection String que a
-// maioria copia usa o pooler (aws-0-<regiao>.pooler.supabase.com) e o usuário
-// no formato postgres.<ref>. Essa combinação NÃO autentica: o host direto
-// espera o usuário "postgres" puro. O sintoma é
-// "password authentication failed for user postgres.<ref>", que parece senha
-// errada mas nao é.
+// Dois problemas de configuração são commonss e ambos derrubam o deploy:
 //
-// Testado contra o projeto real em 08/10/2026:
-//   db.<ref>.supabase.co  + postgres.<ref>   -> FALHA
-//   db.<ref>.supabase.co  + postgres        -> OK
-//   aws-0-<regiao>.pooler... + postgres.<ref> -> OK
-function resolveSupabaseCredentials(): { host: string; user: string } | null {
-  const host = process.env.SQL_HOST || '';
-  const user = process.env.SQL_USER || '';
+// 1) Host direto (db.<ref>.supabase.co) + usuário de pooler (postgres.<ref>)
+//    → "password authentication failed". O host direto espera "postgres".
+//
+// 2) Host direto (db.<ref>.supabase.co) em container sem rota IPv6
+//    → "connect ENETUNREACH 2600:...".
+//    O host direto do Supabase só tem registro AAAA (IPv6). Verificado em
+//    08/10/2026 contra o projeto real: db.<ref>.supabase.co não resolve em
+//    IPv4 (ENOTFOUND), enquanto o pooler resolve nos dois.
+//
+//    Forçar IPv4 não resolve o caso 2 — pior, transforma ENETUNREACH em
+//    ENOTFOUND e mascara a causa. A solução é migrar para o pooler, que é o
+//    host projetado pelo Supabase para acesso externo (e o que o próprio
+//    painel recomenda para conexões serverless).
+//
+// O pooler é derivável do host direto? Não — o subdomínio aws-0-<regiao>
+// depende da região do projeto. A correção usa o que está disponível:
+//   - SQL_POOLER_HOST, se configurado
+//   - o próprio SQL_HOST, quando já for pooler
+// Quando não há como derivar, o erro orienta a configuração manual.
+// ============================================================================
 
-  const isDirectHost = /^db\.[a-z0-9]+\.supabase\.(co|com)$/i.test(host);
-  const isPoolerUser = /^postgres\.[a-z0-9]+$/i.test(user);
+let credentialsFixApplied: { host: string; user: string; port: number } | null = null;
 
-  if (isDirectHost && isPoolerUser) {
-    const fixedUser = user.split('.')[0];
+function resolveSupabaseCredentials(): { host: string; user: string; port: number } | null {
+  if (credentialsFixApplied) return credentialsFixApplied;
+
+  const rawHost = process.env.SQL_HOST || '';
+  const rawUser = process.env.SQL_USER || '';
+  const rawPort = process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432;
+
+  const isDirectHost = /^db\.[a-z0-9]+\.supabase\.(co|com)$/i.test(rawHost);
+  if (!isDirectHost) return null;
+
+  const projectRef = (rawHost.match(/^db\.([a-z0-9]+)\./i) || [])[1];
+  const poolerHost = process.env.SQL_POOLER_HOST || '';
+
+  // Host direto aceita apenas o usuário "postgres".
+  let user = /^postgres\.[a-z0-9]+$/i.test(rawUser) ? 'postgres' : rawUser;
+
+  // Se há um pooler configurado, ele resolve o problema de IPv6 e aceita o
+  // usuário com sufixo do projeto.
+  if (poolerHost) {
+    const poolerUser = /^postgres\.[a-z0-9]+$/i.test(rawUser)
+      ? rawUser
+      : `postgres.${projectRef}`;
+    const poolerPort = process.env.SQL_POOLER_PORT
+      ? parseInt(process.env.SQL_POOLER_PORT, 10)
+      : 6543;
+
     console.warn(
-      `[Supabase] ⚠️  Host direto com usuário de pooler detectado ` +
-      `(host=${host}, user=${user}). Corrigindo para user="${fixedUser}".`
+      `[Supabase] Host direto detectado (${rawHost}). ` +
+      `Migrando para o pooler: host=${poolerHost}, user=${poolerUser}, port=${poolerPort}. ` +
+      `Motivo: o host direto só tem IPv6 e falha em containers sem rota IPv6.`
     );
-    return { host, user: fixedUser };
+    credentialsFixApplied = { host: poolerHost, user: poolerUser, port: poolerPort };
+    return credentialsFixApplied;
   }
 
-  return null;
+  // Sem pooler configurado: corrige só o usuário e avisa sobre o IPv6.
+  if (/^postgres\.[a-z0-9]+$/i.test(rawUser)) {
+    console.warn(
+      `[Supabase] Host direto com usuário de pooler. Corrigindo para "${user}". ` +
+      `⚠️  O host direto (${rawHost}) só possui IPv6 e pode falhar com ENETUNREACH ` +
+      `em containers (Render/Vercel). Configure SQL_POOLER_HOST com o host do ` +
+      `Connection Pooler (Supabase > Settings > Database > Connection string > URI).`
+    );
+  }
+
+return { host: rawHost, user, port: rawPort };
 }
 
 export async function resetCloudSqlPool(): Promise<void> {
@@ -679,6 +749,14 @@ export function getBootDiagnostics() {
     sqlHost: process.env.SQL_HOST || '(ausente)',
     sqlPort: process.env.SQL_PORT || '(ausente, assumindo 5432)',
     sqlDb: process.env.SQL_DB_NAME || '(ausente, assumindo postgres)',
+    sqlPoolerHost: process.env.SQL_POOLER_HOST || '(nao configurado)',
+    // Credenciais efetivamente usadas após as correções automáticas.
+    credenciaisEfetivas: credentialsFixApplied || {
+      host: process.env.SQL_HOST || '(ausente)',
+      user: process.env.SQL_USER || '(ausente)',
+      port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432,
+      semCorrecao: true,
+    },
     cwd: process.cwd(),
     nodeEnv: process.env.NODE_ENV || '(nao definido)',
     render: !!process.env.RENDER,
