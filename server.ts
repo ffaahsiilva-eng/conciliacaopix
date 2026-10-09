@@ -68,7 +68,7 @@ app.use('/api', async (req, res, next) => {
 });
 
 app.get('/api/debug-db', async (req, res) => {
-  const pool = getCloudSqlPool();
+  const pool = await getCloudSqlPool();
   if (!pool) {
     return res.json({ status: 'NO_POOL', env: { host: !!process.env.SQL_HOST, user: !!process.env.SQL_USER, pass: !!process.env.SQL_PASSWORD } });
   }
