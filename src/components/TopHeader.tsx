@@ -199,7 +199,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                     className="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center space-x-2.5 hover:bg-blue-50 text-blue-900 font-bold transition-colors cursor-pointer"
                   >
                     <Database className="w-4 h-4 text-blue-600 shrink-0" />
-                    <span>Backup & Nuvem (Cloud SQL)</span>
+                    <span>Backup & Nuvem</span>
                   </button>
 
                   <button
