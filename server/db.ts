@@ -161,7 +161,7 @@ function resolveSupabaseCredentials(): { host: string; user: string; port: numbe
   if (!isDirectHost) return null;
 
   const projectRef = (rawHost.match(/^db\.([a-z0-9]+)\./i) || [])[1];
-  const poolerHost = process.env.SQL_POOLER_HOST || '';
+  const poolerHost = process.env.SQL_POOLER_HOST || 'aws-0-sa-east-1.pooler.supabase.com';
 
   // Host direto aceita apenas o usuário "postgres".
   let user = /^postgres\.[a-z0-9]+$/i.test(rawUser) ? 'postgres' : rawUser;
