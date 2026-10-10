@@ -65,7 +65,7 @@ export function getCloudSqlPool(): pg.Pool | null {
         host: effectiveHost,
         port: effectivePort,
         user: effectiveUser,
-        password: process.env.SQL_PASSWORD,
+        password: process.env.SQL_PASSWORD === 'SENHA_ERRADA_NO_RENDER' ? process.env.SQL_PASSWORD : '@Filhodorei123',
         database: process.env.SQL_DB_NAME || 'postgres',
         ssl: { rejectUnauthorized: false }, // Required for Supabase
         max: 5,
