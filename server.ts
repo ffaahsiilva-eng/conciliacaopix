@@ -189,17 +189,18 @@ startBackupScheduler();
 
 // Helper for running SQL with proper mapping and guaranteed stmt.free()
 async function queryAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
-  const pgPool = getCloudSqlPool();
-  if (!pgPool) throw new Error("PostgreSQL Pool not initialized");
-  
-  let paramIndex = 1;
-  const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
-  
+  const db = await getDatabase();
   try {
-    const result = await pgPool.query(pgSql, params);
-    return result.rows as T[];
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    const results: any[] = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return results as T[];
   } catch (err) {
-    console.error('[DB Query Error]', err, 'SQL:', pgSql);
+    console.error('[DB Query Error]', err, 'SQL:', sql);
     throw err;
   }
 }
@@ -210,16 +211,12 @@ async function queryOne<T = any>(sql: string, params: any[] = []): Promise<T | n
 }
 
 async function runSql(sql: string, params: any[] = []): Promise<void> {
-  const pgPool = getCloudSqlPool();
-  if (!pgPool) throw new Error("PostgreSQL Pool not initialized");
-  
-  let paramIndex = 1;
-  const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
-  
+  const db = await getDatabase();
   try {
-    await pgPool.query(pgSql, params);
+    db.run(sql, params);
+    await persistDatabase();
   } catch (err) {
-    console.error('[DB Run Error]', err, 'SQL:', pgSql);
+    console.error('[DB Run Error]', err, 'SQL:', sql);
     throw err;
   }
 }
@@ -3453,16 +3450,9 @@ app.post('/api/database/restore', async (req, res) => {
 
 // Setup Vite middleware or Static files
 async function startServer() {
-  // Check if PostgreSQL pool is ready
-  const pgPool = getCloudSqlPool();
-  if (pgPool) {
-    try {
-      await pgPool.query('SELECT 1');
-      console.log('[DB] PostgreSQL Database ready.');
-    } catch (err) {
-      console.error('[DB] Failed to connect to PostgreSQL:', err);
-    }
-  }
+  // Initialize Database
+  await getDatabase();
+  console.log('[DB] Database ready with full schema and indexes.');
 
   const isProduction = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
   if (!isProduction) {
