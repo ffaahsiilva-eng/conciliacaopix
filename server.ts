@@ -189,25 +189,18 @@ startBackupScheduler();
 
 // Helper for running SQL with proper mapping and guaranteed stmt.free()
 async function queryAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
-  const db = await getDatabase();
-  let stmt: any = null;
+  const pgPool = getCloudSqlPool();
+  if (!pgPool) throw new Error("PostgreSQL Pool not initialized");
+  
+  let paramIndex = 1;
+  const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
+  
   try {
-    stmt = db.prepare(sql);
-    stmt.bind(params);
-    const rows: T[] = [];
-    while (stmt.step()) {
-      rows.push(stmt.getAsObject() as unknown as T);
-    }
-    return rows;
+    const result = await pgPool.query(pgSql, params);
+    return result.rows as T[];
   } catch (err) {
-    console.error('[DB Query Error]', err, 'SQL:', sql);
+    console.error('[DB Query Error]', err, 'SQL:', pgSql);
     throw err;
-  } finally {
-    if (stmt) {
-      try {
-        stmt.free();
-      } catch {}
-    }
   }
 }
 
@@ -217,12 +210,16 @@ async function queryOne<T = any>(sql: string, params: any[] = []): Promise<T | n
 }
 
 async function runSql(sql: string, params: any[] = []): Promise<void> {
-  const db = await getDatabase();
+  const pgPool = getCloudSqlPool();
+  if (!pgPool) throw new Error("PostgreSQL Pool not initialized");
+  
+  let paramIndex = 1;
+  const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
+  
   try {
-    db.run(sql, params);
-    await persistDatabase();
+    await pgPool.query(pgSql, params);
   } catch (err) {
-    console.error('[DB Run Error]', err, 'SQL:', sql);
+    console.error('[DB Run Error]', err, 'SQL:', pgSql);
     throw err;
   }
 }
@@ -3456,9 +3453,16 @@ app.post('/api/database/restore', async (req, res) => {
 
 // Setup Vite middleware or Static files
 async function startServer() {
-  // Initialize Database
-  await getDatabase();
-  console.log('[DB] Database ready with full schema and indexes.');
+  // Check if PostgreSQL pool is ready
+  const pgPool = getCloudSqlPool();
+  if (pgPool) {
+    try {
+      await pgPool.query('SELECT 1');
+      console.log('[DB] PostgreSQL Database ready.');
+    } catch (err) {
+      console.error('[DB] Failed to connect to PostgreSQL:', err);
+    }
+  }
 
   const isProduction = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
   if (!isProduction) {
@@ -3499,18 +3503,16 @@ async function startServer() {
     // Auto-cleanup expired locks every 2 minutes (locks older than 5 minutes)
     setInterval(async () => {
       try {
-        const db = await getDatabase();
-        const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+        const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString().replace('T', ' ').replace('Z', '');
         const stale = await queryAll(
           `SELECT id FROM transactions WHERE locked_by_user_id IS NOT NULL AND (locked_at IS NULL OR locked_at < ?) AND status = 'PENDING'`,
           [fiveMinAgo]
         );
         if (stale.length > 0) {
-          db.run(
+          await runSql(
             `UPDATE transactions SET locked_at = NULL, locked_by_user_id = NULL, locked_by_user_name = NULL, locked_by_session_id = NULL WHERE locked_by_user_id IS NOT NULL AND (locked_at IS NULL OR locked_at < ?) AND status = 'PENDING'`,
             [fiveMinAgo]
           );
-          await persistDatabase();
           const staleIds = stale.map((s: any) => s.id);
           broadcastEvent('TRANSACTIONS_UNLOCKED', { transactionIds: staleIds, company_id: 'all', reason: 'expired' });
           console.log(`[LOCK-CLEANUP] Released ${stale.length} expired lock(s).`);
