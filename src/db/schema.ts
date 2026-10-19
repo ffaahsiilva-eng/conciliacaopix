@@ -9,7 +9,7 @@ export const companies = pgTable('companies', {
   color: text('color').default('#2563eb'),
   is_main: integer('is_main').default(0),
   active: integer('active').default(1),
-  created_at: timestamp('created_at').defaultNow(),
+  created_at: timestamp('created_at', { mode: 'string' }).defaultNow(),
 });
 
 export const users = pgTable('users', {
@@ -22,7 +22,7 @@ export const users = pgTable('users', {
   avatar: text('avatar'),
   allowed_companies: text('allowed_companies').default('["matriz","filial"]'),
   active: integer('active').default(1),
-  created_at: timestamp('created_at').defaultNow(),
+  created_at: timestamp('created_at', { mode: 'string' }).defaultNow(),
 });
 
 export const drivers = pgTable('drivers', {
@@ -39,8 +39,8 @@ export const drivers = pgTable('drivers', {
   notes: text('notes'),
   total_sessions: integer('total_sessions').default(0),
   total_amount_reconciled: real('total_amount_reconciled').default(0),
-  created_at: timestamp('created_at').defaultNow(),
-  updated_at: timestamp('updated_at').defaultNow(),
+  created_at: timestamp('created_at', { mode: 'string' }).defaultNow(),
+  updated_at: timestamp('updated_at', { mode: 'string' }).defaultNow(),
 });
 
 export const transactions = pgTable('transactions', {
@@ -50,7 +50,7 @@ export const transactions = pgTable('transactions', {
   bank_name: text('bank_name').notNull(),
   bank_code: text('bank_code'),
   fitid: text('fitid'),
-  date: timestamp('date').notNull(),
+  date: timestamp('date', { mode: 'string' }).notNull(),
   type: text('type').notNull(), // CREDIT, DEBIT
   amount: real('amount').notNull(),
   original_amount: real('original_amount'),
@@ -58,8 +58,8 @@ export const transactions = pgTable('transactions', {
   description: text('description').notNull(),
   memo: text('memo'),
   document_number: text('document_number'),
-  is_pix: boolean('is_pix').default(false),
-  is_pix_return: boolean('is_pix_return').default(false),
+  is_pix: integer('is_pix').default(0),
+  is_pix_return: integer('is_pix_return').default(0),
   return_reason: text('return_reason'),
   linked_tx_id: text('linked_tx_id'),
   status: text('status').default('PENDING'), // PENDING, RECONCILED, IGNORED, RETURNED
@@ -69,14 +69,17 @@ export const transactions = pgTable('transactions', {
   session_id: text('session_id'),
   voucher_number: text('voucher_number'),
   notes: text('notes'),
-  locked_at: timestamp('locked_at'),
+  locked_at: timestamp('locked_at', { mode: 'string' }),
+  locked_by_user_id: text('locked_by_user_id'),
+  locked_by_user_name: text('locked_by_user_name'),
+  locked_by_session_id: text('locked_by_session_id'),
   counterparty_name: text('counterparty_name'),
   counterparty_doc: text('counterparty_doc'),
   raw_data: text('raw_data'),
-  reconciled_at: timestamp('reconciled_at'),
+  reconciled_at: timestamp('reconciled_at', { mode: 'string' }),
   reconciled_by_user_id: text('reconciled_by_user_id'),
   reconciled_by_user_name: text('reconciled_by_user_name'),
-  created_at: timestamp('created_at').defaultNow(),
+  created_at: timestamp('created_at', { mode: 'string' }).defaultNow(),
 });
 
 export const reconciliation_sessions = pgTable('reconciliation_sessions', {
@@ -88,8 +91,8 @@ export const reconciliation_sessions = pgTable('reconciliation_sessions', {
   operator_user_id: text('operator_user_id').notNull(),
   operator_user_name: text('operator_user_name').notNull(),
   status: text('status').default('IN_PROGRESS'),
-  started_at: timestamp('started_at').defaultNow(),
-  completed_at: timestamp('completed_at'),
+  started_at: timestamp('started_at', { mode: 'string' }).defaultNow(),
+  completed_at: timestamp('completed_at', { mode: 'string' }),
   total_items: integer('total_items').default(0),
   total_amount: real('total_amount').default(0),
   missing_amount: real('missing_amount').default(0),
@@ -107,11 +110,11 @@ export const import_batches = pgTable('import_batches', {
   total_transactions: integer('total_transactions').default(0),
   total_credit: real('total_credit').default(0),
   total_debit: real('total_debit').default(0),
-  period_start: timestamp('period_start'),
-  period_end: timestamp('period_end'),
+  period_start: timestamp('period_start', { mode: 'string' }),
+  period_end: timestamp('period_end', { mode: 'string' }),
   imported_by_user_id: text('imported_by_user_id').notNull(),
   imported_by_user_name: text('imported_by_user_name').notNull(),
-  imported_at: timestamp('imported_at').defaultNow(),
+  imported_at: timestamp('imported_at', { mode: 'string' }).defaultNow(),
 });
 
 export const bank_accounts = pgTable('bank_accounts', {
@@ -128,7 +131,7 @@ export const bank_accounts = pgTable('bank_accounts', {
 export const system_snapshots = pgTable('system_snapshots', {
   key: text('key').primaryKey(),
   data: text('data').notNull(),
-  updated_at: timestamp('updated_at').defaultNow(),
+  updated_at: timestamp('updated_at', { mode: 'string' }).defaultNow(),
 });
 
 export const audit_logs = pgTable('audit_logs', {
@@ -141,5 +144,5 @@ export const audit_logs = pgTable('audit_logs', {
   user_name: text('user_name').notNull(),
   user_role: text('user_role').notNull(),
   details_json: text('details_json').default('{}'),
-  created_at: timestamp('created_at').defaultNow(),
+  created_at: timestamp('created_at', { mode: 'string' }).defaultNow(),
 });

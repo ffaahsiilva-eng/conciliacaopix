@@ -190,24 +190,18 @@ startBackupScheduler();
 // Helper for running SQL with proper mapping and guaranteed stmt.free()
 async function queryAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
   const db = await getDatabase();
-  let stmt: any = null;
   try {
-    stmt = db.prepare(sql);
+    const stmt = db.prepare(sql);
     stmt.bind(params);
-    const rows: T[] = [];
+    const results: any[] = [];
     while (stmt.step()) {
-      rows.push(stmt.getAsObject() as unknown as T);
+      results.push(stmt.getAsObject());
     }
-    return rows;
+    stmt.free();
+    return results as T[];
   } catch (err) {
     console.error('[DB Query Error]', err, 'SQL:', sql);
     throw err;
-  } finally {
-    if (stmt) {
-      try {
-        stmt.free();
-      } catch {}
-    }
   }
 }
 
@@ -3499,18 +3493,16 @@ async function startServer() {
     // Auto-cleanup expired locks every 2 minutes (locks older than 5 minutes)
     setInterval(async () => {
       try {
-        const db = await getDatabase();
-        const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+        const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString().replace('T', ' ').replace('Z', '');
         const stale = await queryAll(
           `SELECT id FROM transactions WHERE locked_by_user_id IS NOT NULL AND (locked_at IS NULL OR locked_at < ?) AND status = 'PENDING'`,
           [fiveMinAgo]
         );
         if (stale.length > 0) {
-          db.run(
+          await runSql(
             `UPDATE transactions SET locked_at = NULL, locked_by_user_id = NULL, locked_by_user_name = NULL, locked_by_session_id = NULL WHERE locked_by_user_id IS NOT NULL AND (locked_at IS NULL OR locked_at < ?) AND status = 'PENDING'`,
             [fiveMinAgo]
           );
-          await persistDatabase();
           const staleIds = stale.map((s: any) => s.id);
           broadcastEvent('TRANSACTIONS_UNLOCKED', { transactionIds: staleIds, company_id: 'all', reason: 'expired' });
           console.log(`[LOCK-CLEANUP] Released ${stale.length} expired lock(s).`);
