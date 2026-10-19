@@ -1,4 +1,4 @@
-import { getDatabase } from './db.js';
+import { getDatabase, persistDatabase } from './db.js';
 
 let debounceTimer: NodeJS.Timeout | null = null;
 let isSyncing = false;
@@ -23,11 +23,17 @@ export async function setGoogleDriveWebhookUrl(url: string): Promise<void> {
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
     [cleanUrl]
   );
+  try {
+    await persistDatabase();
+  } catch (err: any) {
+    console.warn('[GoogleDrive] Falha ao persistir webhookUrl no Supabase:', err.message);
+  }
 }
 
 export async function getGoogleDriveSyncStatus(): Promise<{
   configured: boolean;
   webhookUrl: string | null;
+  rawWebhookUrl: string | null;
   lastSync: string | null;
   lastStatus: 'success' | 'error' | 'idle';
   lastMessage: string | null;
@@ -41,7 +47,8 @@ export async function getGoogleDriveSyncStatus(): Promise<{
     const webhookUrl = await getGoogleDriveWebhookUrl();
     return {
       configured: Boolean(webhookUrl && webhookUrl.startsWith('https://script.google.com')),
-      webhookUrl: webhookUrl ? `${webhookUrl.slice(0, 35)}...` : null,
+      webhookUrl: webhookUrl ? `${webhookUrl.slice(0, 45)}...` : null,
+      rawWebhookUrl: webhookUrl || null,
       lastSync: getVal('google_drive_last_sync'),
       lastStatus: (getVal('google_drive_last_status') as any) || 'idle',
       lastMessage: getVal('google_drive_last_message'),
@@ -50,6 +57,7 @@ export async function getGoogleDriveSyncStatus(): Promise<{
     return {
       configured: false,
       webhookUrl: null,
+      rawWebhookUrl: null,
       lastSync: null,
       lastStatus: 'idle',
       lastMessage: null,
@@ -57,11 +65,18 @@ export async function getGoogleDriveSyncStatus(): Promise<{
   }
 }
 
-export async function executeGoogleDriveSync(triggerReason = 'manual'): Promise<{
+export async function executeGoogleDriveSync(
+  triggerReason = 'manual',
+  explicitUrl?: string
+): Promise<{
   success: boolean;
   message: string;
 }> {
-  const webhookUrl = await getGoogleDriveWebhookUrl();
+  let webhookUrl = (explicitUrl && explicitUrl.trim()) || (await getGoogleDriveWebhookUrl());
+  if (explicitUrl && explicitUrl.trim() && explicitUrl.startsWith('https://script.google.com')) {
+    await setGoogleDriveWebhookUrl(explicitUrl.trim());
+  }
+
   if (!webhookUrl || !webhookUrl.startsWith('https://script.google.com')) {
     return {
       success: false,

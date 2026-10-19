@@ -3254,7 +3254,8 @@ app.post('/api/google-drive/config', async (req, res) => {
 
 app.post('/api/google-drive/sync', async (req, res) => {
   try {
-    const result = await executeGoogleDriveSync('manual');
+    const { webhookUrl } = req.body || {};
+    const result = await executeGoogleDriveSync('manual', webhookUrl);
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });

@@ -57,9 +57,8 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
       if (resDrive.ok) {
         const driveData = await resDrive.json();
         setDriveStatus(driveData);
-        if (driveData.webhookUrl && !webhookInput) {
-          // If already configured, show current
-          setWebhookInput('');
+        if (driveData.rawWebhookUrl && !webhookInput) {
+          setWebhookInput(driveData.rawWebhookUrl);
         }
       }
     } catch (err) {
@@ -95,9 +94,11 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Erro ao salvar URL.');
-      setDriveMessage({ type: 'success', text: 'URL do Google Apps Script configurada com sucesso!' });
+      setDriveMessage({ type: 'success', text: 'URL do Google Apps Script configurada e salva com sucesso!' });
       setDriveStatus(data.status);
-      setWebhookInput('');
+      if (data.status?.rawWebhookUrl) {
+        setWebhookInput(data.status.rawWebhookUrl);
+      }
     } catch (err: any) {
       setDriveMessage({ type: 'error', text: err.message || 'Falha ao salvar URL.' });
     } finally {
@@ -109,7 +110,12 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
     try {
       setSyncingDrive(true);
       setDriveMessage(null);
-      const res = await fetch('/api/google-drive/sync', { method: 'POST' });
+      const urlToSend = webhookInput.trim() || driveStatus?.rawWebhookUrl;
+      const res = await fetch('/api/google-drive/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ webhookUrl: urlToSend })
+      });
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.message || data.error || 'Erro ao sincronizar com Google Drive.');
@@ -283,7 +289,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
               <button
                 type="button"
                 onClick={handleSyncGoogleDrive}
-                disabled={syncingDrive || !driveStatus?.configured}
+                disabled={syncingDrive || (!driveStatus?.configured && !webhookInput.trim())}
                 className="flex-1 inline-flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3.5 py-2 rounded-lg text-xs transition-all disabled:opacity-50 cursor-pointer shadow-xs"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${syncingDrive ? 'animate-spin' : ''}`} />
