@@ -1306,6 +1306,12 @@ function initSchema(db: Database): void {
       details_json TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS system_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // Auto-migrate transactions table if it has the older CHECK constraint without 'RETURNED'

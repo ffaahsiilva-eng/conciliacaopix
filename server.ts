@@ -9,6 +9,7 @@ import jwt from 'jsonwebtoken';
 import path from 'path';
 import fs from 'fs';
 import { getDatabase, persistDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery, startBackupScheduler, listLocalBackups, createLocalBackup, listSnapshotHistory, loadSnapshotFromHistory, applySnapshotToDatabase, validateSnapshotBuffer, getBootDiagnostics } from './server/db.js';
+import { getGoogleDriveSyncStatus, setGoogleDriveWebhookUrl, executeGoogleDriveSync, scheduleGoogleDriveAutoSync } from './server/googleDriveService.js';
 import { parseOfx, isBalanceLine } from './server/parsers/ofxParser.js';
 import { parseCsvStatement } from './server/parsers/csvParser.js';
 
@@ -949,6 +950,7 @@ app.post('/api/statements/upload', async (req, res) => {
     }
 
     await persistDatabase();
+    scheduleGoogleDriveAutoSync('statement-upload');
 
     await logAudit(
       'STATEMENT_IMPORTED',
@@ -2506,6 +2508,7 @@ app.post('/api/reconciliation/finish-session', async (req, res) => {
     // return success to the client because the conciliation actually happened.
     try {
       await persistDatabase();
+      scheduleGoogleDriveAutoSync('finish-session');
     } catch (persistErr: any) {
       console.error('[finish-session] persistDatabase failed (transactions already committed):', persistErr);
     }
@@ -3220,6 +3223,52 @@ app.post('/api/database/backups', async (req, res) => {
       size: data.length,
       backups: listLocalBackups(),
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// GOOGLE DRIVE & GOOGLE SHEETS SYNC
+// ============================================================================
+
+app.get('/api/google-drive/status', async (req, res) => {
+  try {
+    const status = await getGoogleDriveSyncStatus();
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/google-drive/config', async (req, res) => {
+  try {
+    const { webhookUrl } = req.body || {};
+    await setGoogleDriveWebhookUrl(webhookUrl || '');
+    const status = await getGoogleDriveSyncStatus();
+    res.json({ success: true, message: 'Configuração do Google Drive salva com sucesso!', status });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/google-drive/sync', async (req, res) => {
+  try {
+    const result = await executeGoogleDriveSync('manual');
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/google-drive/script', async (req, res) => {
+  try {
+    const scriptPath = path.resolve(process.cwd(), 'google-apps-script.js');
+    if (fs.existsSync(scriptPath)) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      return res.send(fs.readFileSync(scriptPath, 'utf8'));
+    }
+    res.status(404).send('Script não encontrado.');
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
