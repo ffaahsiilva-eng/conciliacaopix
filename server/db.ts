@@ -2,6 +2,7 @@ import initSqlJs, { Database } from 'sql.js';
 import fs from 'fs';
 import path from 'path';
 import dns from 'dns';
+import crypto from 'crypto';
 import pg from 'pg';
 import { gzipSync, gunzipSync } from 'zlib';
 
@@ -298,23 +299,52 @@ export function getLocalFileMtime(): number {
   return localFileLastWriteMs;
 }
 
+/** Metadados leves do snapshot na nuvem (sem baixar o blob de 3MB) */
+export interface CloudSnapshotMeta {
+  exists: boolean;
+  ageSeconds: number | null;
+  updatedMs: number;
+  dataBytes: number;
+}
+
+/**
+ * Consulta APENAS o tamanho e a idade do snapshot no Supabase (~40 bytes).
+ * EVITA transferir o banco inteiro (3MB de Egress) quando o arquivo local já está atualizado.
+ */
+export async function getCloudSnapshotMetadata(): Promise<CloudSnapshotMeta | null> {
+  const pool = getCloudSqlPool();
+  if (!pool) return null;
+
+  try {
+    const res = await safeCloudSqlQuery<{ data_len: string | null; age_seconds: string | null }>(
+      `SELECT length(data) AS data_len, EXTRACT(EPOCH FROM (NOW() - updated_at)) AS age_seconds
+         FROM system_snapshots WHERE key = 'main_db'`,
+      undefined,
+      15000
+    );
+
+    if (res && res.rows.length > 0) {
+      const ageSec = Number(res.rows[0]?.age_seconds);
+      const dataLen = Number(res.rows[0]?.data_len) || 0;
+      const updatedMs = Number.isFinite(ageSec) ? Date.now() - ageSec * 1000 : 0;
+      return {
+        exists: true,
+        ageSeconds: Number.isFinite(ageSec) ? ageSec : null,
+        updatedMs,
+        dataBytes: dataLen,
+      };
+    }
+    return { exists: false, ageSeconds: null, updatedMs: 0, dataBytes: 0 };
+  } catch (err: any) {
+    console.warn('[CloudSQL] Falha ao consultar metadados do snapshot:', err?.message || err);
+    return null;
+  }
+}
+
 export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
   // Try up to 4 times with backoff to handle cold start when Cloud SQL is spinning up from scale-to-zero
   for (let attempt = 1; attempt <= 4; attempt++) {
     try {
-      // A idade do snapshot é calculada pelo PRÓPRIO Postgres (em UTC), não
-      // comparando `updated_at` com o relógio do processo.
-      //
-      // Por quê: a coluna updated_at é TIMESTAMP WITHOUT TIME ZONE e o
-      // Postgres a grava com NOW(), que usa o fuso do SERVIDOR do banco
-      // (UTC-3). O driver pg converte esse valor usando o fuso LOCAL do
-      // processo — que no Render é UTC. A diferença de 3h fazia o Render
-      // concluir que o snapshot era "3h mais velho" e descartar o banco
-      // bom, subiendo com um SQLite vazio.
-      //
-      // Pedir a idade direto ao banco elimina a conversão de fuso: o que
-      // importa não é o instante absoluto, mas se o snapshot é mais novo
-      // que o arquivo local.
       const res = await safeCloudSqlQuery<{ data: string; age_seconds: string | null }>(
         `SELECT data, EXTRACT(EPOCH FROM (NOW() - updated_at)) AS age_seconds
            FROM system_snapshots WHERE key = 'main_db'`,
@@ -349,22 +379,22 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
         if (buf.length > 0) {
           // Track the raw SQLite bytes for consistent Safety Shield comparisons
           knownHealthyRawBytes = buf.length;
+          lastUploadedHash = crypto.createHash('sha256').update(buf).digest('hex');
 
           // Converte a idade (em segundos) em um instante absoluto usando o
-          // relógio do próprio processo. Assim os dois lados da comparação
-          // usam a mesma base, sem depender do fuso do Postgres.
+          // relógio do próprio processo.
           const ageSec = Number(res.rows[0]?.age_seconds);
           if (Number.isFinite(ageSec)) {
             cloudSnapshotUpdatedMs = Date.now() - ageSec * 1000;
             bootSnapshotAgeMin = ageSec / 60;
             console.log(
-              `[CloudSQL] Snapshot com ${(ageSec / 60).toFixed(1)} min de idade ` +
+              `[CloudSQL] Snapshot baixado com ${(ageSec / 60).toFixed(1)} min de idade ` +
               `(${buf.length} bytes).`
             );
           } else {
             cloudSnapshotUpdatedMs = 0;
           }
-          console.log(`[CloudSQL] Loaded database snapshot (${buf.length} bytes) from Google Cloud SQL.`);
+          console.log(`[CloudSQL] Loaded database snapshot (${buf.length} bytes) from Supabase.`);
           return buf;
         }
       }
@@ -380,8 +410,6 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
         return null;
       }
     } catch (err: any) {
-      // O motivo vem do safeCloudSqlQuery quando ele falhou, ou da exceção
-      // quando o erro foi na descompressão/leitura do blob.
       bootLoadError =
         (err?.message && !/^Timeout/.test(err.message)
           ? `${err.message}`
@@ -400,8 +428,9 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
 }
 
 // Track the raw byte size of the last known healthy DB saved to Cloud SQL
-// ALWAYS store raw bytes (not base64/compressed) for consistent comparison
 let knownHealthyRawBytes = 0;
+// Hash SHA-256 do último buffer salvo com sucesso no Supabase para evitar uploads idênticos redundantes
+let lastUploadedHash = '';
 
 export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
   const pool = getCloudSqlPool();
@@ -416,6 +445,12 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
     console.error(
       `[CloudSQL SAFETY SHIELD] BLOCKED: Buffer is only ${buffer.length} bytes (likely empty/corrupted). Refusing to overwrite.`
     );
+    return;
+  }
+
+  // OTIMIZAÇÃO DE EGRESS: se o buffer não sofreu nenhuma alteração desde o último upload, evita reenviar
+  const currentHash = crypto.createHash('sha256').update(buffer).digest('hex');
+  if (currentHash === lastUploadedHash) {
     return;
   }
 
@@ -436,8 +471,8 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
     return;
   }
 
-  // Compress
-  const compressed = gzipSync(buffer, { level: 3 });
+  // Compress with level 9 (maximum compression to save Supabase storage and bandwidth)
+  const compressed = gzipSync(buffer, { level: 9 });
   const b64 = compressed.toString('base64');
 
   // Save with dedicated retry loop (up to 3 attempts, 45s timeout each)
@@ -454,10 +489,9 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
 
       if (result) {
         knownHealthyRawBytes = buffer.length;
-        console.log(`[CloudSQL] ✅ Saved: ${buffer.length} raw → ${compressed.length} gzip → ${b64.length} b64 (attempt ${attempt})`);
-        // Só grava histórico depois que o slot principal foi salvo com
-        // sucesso: um histórico de um snapshot que não substituiu o atual
-        // não serve como ponto de retorno.
+        lastUploadedHash = currentHash;
+        console.log(`[CloudSQL] ✅ Saved: ${buffer.length} raw → ${compressed.length} gzip (lvl 9) → ${b64.length} b64 (attempt ${attempt})`);
+        // Só grava histórico depois que o slot principal foi salvo com sucesso
         saveSnapshotToHistory(buffer, b64);
         return; // SUCCESS
       }
@@ -792,71 +826,73 @@ export async function getDatabase(): Promise<Database> {
       // Registra o mtime do arquivo local ANTES de qualquer escrita.
       markLocalFileFresh();
 
-      const cloudBuffer = await loadSnapshotFromCloudSql();
-
-      if (cloudBuffer && cloudBuffer.length > 0) {
-        // Decide se o snapshot do Supabase tem conteúdo real antes de
-        // descartar o arquivo local.
-        //
-        // Um snapshot "vazio" (banco novo, sem tabelas populadas) não pode
-        // substituir um banco com dados. No Render isso acontecia a cada
-        // deploy: o filesystem é efêmero, o app subia sem Drivers e a
-        // primeira gravação sobrescrevia o snapshot bom do Supabase com um
-        // banco vazio. Era a segunda causa de deploy zerado.
-        const snapshotUsable = validateSnapshotBufferSync(cloudBuffer);
-
-        if (!snapshotUsable.usable) {
-          console.error(
-            `[DB] ❌ Snapshot do Supabase parece VAZIO (${snapshotUsable.motivo}). ` +
-            `Mantendo o arquivo local para não perder dados.`
-          );
-          // Cai no passo 2 (restaurar do local).
-        } else {
-          // O arquivo local só "vence" o snapshot se tiver DADOS e for
-          // realmente mais recente.
-          //
-          // Sem a checagem de conteúdo, o deploy no Render entrava em loop
-          // de banco vazio: o container tem filesystem efêmero, o arquivo
-          // local acabou de ser criado (mtime = agora), então era sempre
-          // "mais novo" que o snapshot de 10 minutos atrás — e o app
-          // descartava o snapshot bom, subia vazio e na primeira gravação
-          // sobrescrevia o snapshot do Supabase com o vazio.
-          let localHasData = false;
-          if (fs.existsSync(DB_FILE)) {
-            try {
-              const localBuf = fs.readFileSync(DB_FILE);
-              if (localBuf.length > 1000) {
-                localHasData = validateSnapshotBufferSync(localBuf).usable;
-              }
-            } catch (_) {}
+      // Verifica se temos um arquivo local com dados utilizáveis
+      let localHasData = false;
+      let localBuf: Buffer | null = null;
+      if (fs.existsSync(DB_FILE)) {
+        try {
+          localBuf = fs.readFileSync(DB_FILE);
+          if (localBuf.length > 1000) {
+            localHasData = validateSnapshotBufferSync(localBuf).usable;
           }
+        } catch (_) {}
+      }
 
-          const localIsNewer =
-            localHasData &&
-            localFileLastWriteMs > 0 &&
-            cloudSnapshotUpdatedMs > 0 &&
-            localFileLastWriteMs > cloudSnapshotUpdatedMs + 120_000;
+      // 1. Consulta leve de metadados no Supabase (~40 bytes).
+      // ECONOMIA DE EGRESS: Só baixa os 3MB se o arquivo local estiver ausente ou desatualizado.
+      const meta = await getCloudSnapshotMetadata();
 
-          if (localIsNewer) {
-            console.warn(
-              `[DB] ⚠️  Arquivo local tem dados e é mais recente que o snapshot ` +
-              `do Supabase (local: ${new Date(localFileLastWriteMs).toISOString()}, ` +
-              `snapshot: ${new Date(cloudSnapshotUpdatedMs).toISOString()}). ` +
-              `Mantendo o local.`
+      let shouldDownloadCloud = false;
+
+      if (meta && meta.exists) {
+        cloudSnapshotUpdatedMs = meta.updatedMs;
+        if (meta.ageSeconds !== null) {
+          bootSnapshotAgeMin = meta.ageSeconds / 60;
+        }
+
+        if (!localHasData || !localBuf) {
+          console.log(`[DB] Arquivo local sem dados. Baixando snapshot do Supabase (${(meta.dataBytes / 1024 / 1024).toFixed(2)} MB)...`);
+          shouldDownloadCloud = true;
+        } else if (meta.updatedMs > 0 && localFileLastWriteMs > 0 && meta.updatedMs > localFileLastWriteMs + 60_000) {
+          console.log(
+            `[DB] Snapshot do Supabase é mais recente que o local ` +
+            `(nuvem: ${new Date(meta.updatedMs).toISOString()}, local: ${new Date(localFileLastWriteMs).toISOString()}). ` +
+            `Baixando atualização...`
+          );
+          shouldDownloadCloud = true;
+        } else {
+          // Arquivo local tem dados e é recente: EVITA O DOWNLOAD DE 3MB!
+          console.log(
+            `[DB] ⚡ Arquivo local já está atualizado (${new Date(localFileLastWriteMs).toISOString()}). ` +
+            `Economia de Egress: download de ${(meta.dataBytes / 1024 / 1024).toFixed(2)} MB EVITADO.`
+          );
+          instance = new SQL.Database(localBuf);
+          bootSource = 'local';
+          bootSnapshotBytes = localBuf.length;
+          shouldDownloadCloud = false;
+        }
+      }
+
+      if (shouldDownloadCloud) {
+        const cloudBuffer = await loadSnapshotFromCloudSql();
+
+        if (cloudBuffer && cloudBuffer.length > 0) {
+          const snapshotUsable = validateSnapshotBufferSync(cloudBuffer);
+
+          if (!snapshotUsable.usable) {
+            console.error(
+              `[DB] ❌ Snapshot do Supabase parece VAZIO (${snapshotUsable.motivo}). ` +
+              `Mantendo o arquivo local para não perder dados.`
             );
-            // Não usa o snapshot; cai no passo 2 (restaurar do local).
-          } else {
-            if (!localHasData) {
-              console.log(
-                `[DB] Arquivo local sem dados (${localFileLastWriteMs > 0 ? 'recém-criado' : 'inexistente'}). ` +
-                `Usando o snapshot do Supabase.`
-              );
+            if (localHasData && localBuf) {
+              instance = new SQL.Database(localBuf);
+              bootSource = 'local';
+              bootSnapshotBytes = localBuf.length;
             }
+          } else {
             instance = new SQL.Database(cloudBuffer);
             bootSource = 'supabase';
             bootSnapshotBytes = cloudBuffer.length;
-            // Backup local antes de sobrescrever: o arquivo atual pode ser
-            // mais recente que o snapshot ou estar corrompido.
             try {
               if (fs.existsSync(DB_FILE) && localFileLastWriteMs > cloudSnapshotUpdatedMs) {
                 fs.copyFileSync(DB_FILE, `${DB_FILE}.prev`);
@@ -864,6 +900,7 @@ export async function getDatabase(): Promise<Database> {
             } catch (_) {}
             try {
               fs.writeFileSync(DB_FILE, cloudBuffer);
+              markLocalFileFresh();
             } catch (_) {}
             console.log(`[DB] Database restored from Supabase snapshot (${cloudBuffer.length} bytes, ${snapshotUsable.transacoes} transações).`);
           }
@@ -1082,7 +1119,7 @@ process.on('SIGTERM', () => {
     try {
       const data = dbInstance.export();
       const buffer = Buffer.from(data);
-      const compressed = gzipSync(buffer, { level: 3 });
+      const compressed = gzipSync(buffer, { level: 9 });
       const b64 = compressed.toString('base64');
       const pool = getCloudSqlPool();
       if (pool) {
