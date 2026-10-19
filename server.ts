@@ -3037,19 +3037,20 @@ app.post('/api/database/clean', async (req, res) => {
 // ============================================================================
 
 app.get('/api/health', async (req, res) => {
-  const supabaseConfigured = Boolean(
-    process.env.SQL_HOST && process.env.SQL_USER && process.env.SQL_PASSWORD
-  );
+  const rawHost = process.env.SQL_HOST || 'aws-0-us-east-1.pooler.supabase.com';
+  const rawUser = process.env.SQL_USER || 'postgres.xthguwryujwbdtdgflmw';
+  const rawPassword = process.env.SQL_PASSWORD || '@Filhodorei123';
+  const supabaseConfigured = Boolean(rawHost && rawUser && rawPassword);
 
   const result: any = {
     status: 'ok',
     supabaseConfigured,
     env: {
-      SQL_HOST: process.env.SQL_HOST ? 'configurada' : 'AUSENTE',
-      SQL_PORT: process.env.SQL_PORT || 'AUSENTE (assumindo 5432)',
-      SQL_USER: process.env.SQL_USER ? 'configurado' : 'AUSENTE',
-      SQL_PASSWORD: process.env.SQL_PASSWORD ? 'configurada' : 'AUSENTE',
-      SQL_DB_NAME: process.env.SQL_DB_NAME || 'AUSENTE (assumindo postgres)',
+      SQL_HOST: process.env.SQL_HOST ? 'configurada' : 'padrao-fallback',
+      SQL_PORT: process.env.SQL_PORT || '6543 (padrao-fallback)',
+      SQL_USER: process.env.SQL_USER ? 'configurado' : 'padrao-fallback',
+      SQL_PASSWORD: process.env.SQL_PASSWORD ? 'configurada' : 'padrao-fallback',
+      SQL_DB_NAME: process.env.SQL_DB_NAME || 'postgres (padrao-fallback)',
       VITE_API_URL: process.env.VITE_API_URL || 'AUSENTE',
     },
   };

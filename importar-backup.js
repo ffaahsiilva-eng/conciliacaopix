@@ -1,6 +1,6 @@
 import fs from 'fs';
 import 'dotenv/config';
-import { getDatabase, persistDatabaseSync } from './server/db.js';
+import { getDatabase, persistDatabase, createLocalBackup } from './server/db.ts';
 
 // We implement the same logic as /api/database/restore but natively
 // so it bypasses all Vercel/Express limits and imports the massive file securely.
@@ -40,15 +40,16 @@ function insertDynamicRow(db, tableName, rowObj, validCols) {
 }
 
 async function runImport() {
-  console.log('Iniciando importação segura do backup gigante direto no Banco...');
+  const targetFile = process.argv[2] || 'conciliapix.json';
+  console.log(`Iniciando importação segura do backup (${targetFile}) direto no Banco...`);
   
-  if (!fs.existsSync('backup-conciliapix.json')) {
-    console.error('ERRO: O arquivo backup-conciliapix.json não foi encontrado na pasta principal.');
+  if (!fs.existsSync(targetFile)) {
+    console.error(`ERRO: O arquivo ${targetFile} não foi encontrado.`);
     return;
   }
 
-  console.log('1. Lendo arquivo backup-conciliapix.json...');
-  const rawData = fs.readFileSync('backup-conciliapix.json', 'utf8');
+  console.log(`1. Lendo arquivo ${targetFile}...`);
+  const rawData = fs.readFileSync(targetFile, 'utf8');
   let parsed;
   try {
     parsed = JSON.parse(rawData);
@@ -107,7 +108,7 @@ async function runImport() {
     console.log(`4. Sucesso! Inseridas ${txCount} transações.`);
     console.log('5. Sincronizando e enviando snapshot para a nuvem (Supabase)...');
     
-    persistDatabaseSync();
+    await persistDatabase();
 
     console.log('=== IMPORTAÇÃO CONCLUÍDA COM SUCESSO ===');
     console.log('O seu sistema agora irá continuar salvando corretamente a partir deste ponto, totalmente seguro na nuvem!');

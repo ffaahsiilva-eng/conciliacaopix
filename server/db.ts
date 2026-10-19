@@ -28,16 +28,29 @@ let pendingSaveBuffer: Buffer | null = null;
 // /api/health possa reportar a causa real em vez de apenas "banco vazio".
 let lastQueryError: string | null = null;
 
+// Fallbacks automáticos para deploy (Vercel/Render) caso as variáveis não estejam preenchidas
+const DEFAULT_SQL_HOST = 'aws-0-us-east-1.pooler.supabase.com';
+const DEFAULT_SQL_PORT = 6543;
+const DEFAULT_SQL_USER = 'postgres.xthguwryujwbdtdgflmw';
+const DEFAULT_SQL_PASSWORD = '@Filhodorei123';
+const DEFAULT_SQL_DB_NAME = 'postgres';
+
 export function getCloudSqlPool(): pg.Pool | null {
-  if (process.env.SQL_HOST && process.env.SQL_USER && process.env.SQL_PASSWORD) {
+  const effectiveRawHost = process.env.SQL_HOST || DEFAULT_SQL_HOST;
+  const effectiveRawUser = process.env.SQL_USER || DEFAULT_SQL_USER;
+  const effectiveRawPassword = process.env.SQL_PASSWORD || DEFAULT_SQL_PASSWORD;
+  const effectiveRawPort = process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : DEFAULT_SQL_PORT;
+  const effectiveRawDb = process.env.SQL_DB_NAME || DEFAULT_SQL_DB_NAME;
+
+  if (effectiveRawHost && effectiveRawUser && effectiveRawPassword) {
     if (!pgPool) {
       // Corrige as duas incompatibilidades mais comuns do Supabase:
       // usuário de pooler em host direto, e host direto sem rota IPv6.
       // Ver resolveSupabaseCredentials.
       const resolved = resolveSupabaseCredentials();
-      const effectiveHost = resolved?.host || process.env.SQL_HOST;
-      const effectiveUser = resolved?.user || process.env.SQL_USER;
-      const effectivePort = resolved?.port || (process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432);
+      const effectiveHost = resolved?.host || effectiveRawHost;
+      const effectiveUser = resolved?.user || effectiveRawUser;
+      const effectivePort = resolved?.port || effectiveRawPort;
 
       // Diagnóstico: registra quais IPs o host resolve. Sem isso, um
       // ENETUNREACH IPv6 não deixa claro que o problema é de rota, não de
