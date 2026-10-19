@@ -4,8 +4,6 @@ import { api, formatCurrency, formatDateTime, formatPlate, formatDate, subscribe
 import { LicensePlateBadge } from '../components/LicensePlateBadge';
 import { useAuth } from '../context/AuthContext';
 import { useCompany } from '../context/CompanyContext';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import {
   FileSpreadsheet,
   Truck,
@@ -211,8 +209,14 @@ export const SessionsView: React.FC = () => {
     window.print();
   };
 
-  const handleGeneratePdf = () => {
+  const handleGeneratePdf = async () => {
     if (!selectedSession) return;
+    // Lazy-load: jsPDF (~29MB) carregado apenas quando o PDF é gerado,
+    // não no boot. Remove ~195KB do bundle e posterga o parse/wasm do jspdf.
+    const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
+      import('jspdf'),
+      import('jspdf-autotable'),
+    ]);
     const doc = new jsPDF();
     const { session, transactions } = selectedSession;
 

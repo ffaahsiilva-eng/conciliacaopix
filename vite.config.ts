@@ -21,12 +21,6 @@ export default defineConfig(() => {
         'lucide-react',
         'motion',
         'papaparse',
-        'jspdf',
-        'jspdf-autotable',
-        '@google/genai',
-        'firebase/app',
-        'firebase/auth',
-        'firebase/firestore'
       ]
     },
     server: {
