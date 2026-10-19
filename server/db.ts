@@ -475,19 +475,39 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
   const compressed = gzipSync(buffer, { level: 9 });
   const b64 = compressed.toString('base64');
 
+  // Garante que a tabela system_snapshots existe
+  await safeCloudSqlQuery(
+    `CREATE TABLE IF NOT EXISTS system_snapshots (
+       key TEXT PRIMARY KEY,
+       data TEXT NOT NULL,
+       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+     )`,
+    undefined,
+    15000
+  );
+
   // Save with dedicated retry loop (up to 3 attempts, 45s timeout each)
   let lastError: string = '';
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const result = await safeCloudSqlQuery(
         `INSERT INTO system_snapshots (key, data, updated_at)
-         VALUES ('main_db', $1, NOW()), ('main_db_backup', $1, NOW())
+         VALUES ('main_db', $1, NOW())
          ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
         [b64],
         45000  // 45s timeout — large snapshots need more time
       );
 
       if (result) {
+        // Grava cópia de backup secundária de forma não-bloqueante
+        safeCloudSqlQuery(
+          `INSERT INTO system_snapshots (key, data, updated_at)
+           VALUES ('main_db_backup', $1, NOW())
+           ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+          [b64],
+          30000
+        ).catch(() => {});
+
         knownHealthyRawBytes = buffer.length;
         lastUploadedHash = currentHash;
         console.log(`[CloudSQL] ✅ Saved: ${buffer.length} raw → ${compressed.length} gzip (lvl 9) → ${b64.length} b64 (attempt ${attempt})`);
@@ -1125,10 +1145,10 @@ process.on('SIGTERM', () => {
       if (pool) {
         pool.query(
           `INSERT INTO system_snapshots (key, data, updated_at) 
-           VALUES ('main_db', $1, NOW()), ('main_db_backup', $1, NOW()) 
+           VALUES ('main_db', $1, NOW()) 
            ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
           [b64]
-        );
+        ).catch(() => {});
       }
     } catch (_) {}
   }
