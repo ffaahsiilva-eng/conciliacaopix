@@ -318,12 +318,13 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
                   </button>
                 </div>
 
+                <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-blue-900 leading-snug">
+                  <strong>💡 Dica Rápida:</strong> Se o Google der erro de <em>"Não foi possível abrir o arquivo"</em> ao clicar em Extensões (causado quando há mais de 1 conta Google conectada no navegador), você pode abrir direto o site do Apps Script no link abaixo:
+                </div>
+
                 <ol className="list-decimal list-inside space-y-1.5 text-[11px] text-slate-600">
                   <li>
-                    Acesse seu <strong>Google Drive</strong> e crie uma <strong>Planilha Google em branco</strong> com o nome que desejar (ex: <em>ConciliaPix - Controle</em>).
-                  </li>
-                  <li>
-                    No menu superior da planilha, clique em <strong>Extensões &gt; Apps Script</strong>.
+                    Acesse direto: <a href="https://script.google.com/home/start" target="_blank" rel="noreferrer" className="text-emerald-700 font-bold underline inline-flex items-center gap-0.5">script.google.com <ExternalLink className="w-2.5 h-2.5 inline" /></a> e clique no botão <strong>"+ Novo projeto"</strong> (ou na sua planilha em <em>Extensões &gt; Apps Script</em>).
                   </li>
                   <li>
                     Apague o código existente, clique em <strong>"Copiar Código do Script"</strong> acima e cole lá.
@@ -331,7 +332,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
                   <li>
                     Clique no botão azul <strong>Implantar &gt; Nova implantação</strong>.
                     <ul className="list-disc list-inside ml-4 mt-0.5 text-slate-500">
-                      <li>Tipo: <strong>App da Web</strong></li>
+                      <li>Tipo (ícone de engrenagem): <strong>App da Web</strong></li>
                       <li>Quem pode acessar: <strong>Qualquer pessoa (Anyone)</strong></li>
                     </ul>
                   </li>
@@ -339,6 +340,9 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
                     Copie a <strong>URL do app da Web</strong> gerada e cole no campo acima!
                   </li>
                 </ol>
+                <p className="text-[10px] text-slate-500 italic">
+                  * O script criará ou atualizará automaticamente a pasta "ConciliaPix_Backups" e a planilha no seu Google Drive a cada envio.
+                </p>
               </div>
             )}
           </div>

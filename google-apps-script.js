@@ -71,6 +71,15 @@ function doPost(e) {
     // 2. ATUALIZAR AS ABAS DA PLANILHA GOOGLE (EXCEL ONLINE)
     // ==========================================================================
     var ss = SpreadsheetApp.getActiveSpreadsheet();
+    if (!ss) {
+      // Se o script for criado direto em script.google.com (projeto independente)
+      var sheetFiles = DriveApp.getFilesByName("ConciliaPix - Controle & Extratos");
+      if (sheetFiles.hasNext()) {
+        ss = SpreadsheetApp.open(sheetFiles.next());
+      } else {
+        ss = SpreadsheetApp.create("ConciliaPix - Controle & Extratos");
+      }
+    }
     var rowsUpdated = 0;
 
     if (ss && payload.spreadsheetData) {
