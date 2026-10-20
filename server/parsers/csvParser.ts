@@ -1,25 +1,58 @@
 import Papa from 'papaparse';
-import { ParsedBankStatement, ParsedTransaction, checkIfPix, checkIfPixReturn, extractCounterpartyInfo, isBalanceLine } from './ofxParser.js';
+import {
+  ParsedBankStatement,
+  ParsedTransaction,
+  checkIfPix,
+  checkIfPixReturn,
+  extractCounterpartyInfo,
+  isBalanceLine
+} from './ofxParser.js';
+
+function cleanHeaderCell(str: any): string {
+  if (!str) return '';
+  return String(str)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // remove accents (ó -> o, ç -> c, etc.)
+    .replace(/[\uFFFD\u0000-\u001F]/g, '') // remove Unicode replacement / control chars
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
 
 export function parseCsvStatement(
   csvContent: string,
   bankName = 'Extrato Bancário',
   bankCode = ''
 ): ParsedBankStatement {
-  let cleaned = csvContent;
-  if (cleaned.charCodeAt(0) === 0xFEFF) {
-    cleaned = cleaned.slice(1);
-  }
+  // Strip BOM and clean edges
+  let cleaned = csvContent.replace(/^\uFEFF/, '').trim();
 
   const papaInstance = (Papa as any)?.default || Papa;
-  const parsed = papaInstance.parse(cleaned, {
+  let parsed = papaInstance.parse(cleaned, {
     skipEmptyLines: 'greedy',
     header: false
   });
 
-  const rows = parsed.data as string[][];
+  let rows = parsed.data as string[][];
   if (!rows || rows.length < 2) {
     throw new Error('Arquivo CSV não contém linhas de dados suficientes.');
+  }
+
+  // Check if delimiter was misidentified due to preamble header lines (very common in BB & Caixa)
+  const sampleRows = rows.slice(0, 12).filter((r) => r && r.length > 0);
+  const unparsedWithSemicolon = sampleRows.filter((r) => r.length === 1 && r[0].includes(';')).length;
+  const unparsedWithTab = sampleRows.filter((r) => r.length === 1 && r[0].includes('\t')).length;
+  const unparsedWithComma = sampleRows.filter((r) => r.length === 1 && r[0].includes(',')).length;
+
+  if (unparsedWithSemicolon >= 2) {
+    parsed = papaInstance.parse(cleaned, { delimiter: ';', skipEmptyLines: 'greedy', header: false });
+    rows = parsed.data as string[][];
+  } else if (unparsedWithTab >= 2) {
+    parsed = papaInstance.parse(cleaned, { delimiter: '\t', skipEmptyLines: 'greedy', header: false });
+    rows = parsed.data as string[][];
+  } else if (unparsedWithComma >= 2 && parsed.meta.delimiter !== ',') {
+    parsed = papaInstance.parse(cleaned, { delimiter: ',', skipEmptyLines: 'greedy', header: false });
+    rows = parsed.data as string[][];
   }
 
   let headerIndex = -1;
@@ -29,67 +62,141 @@ export function parseCsvStatement(
   let creditCol = -1;
   let debitCol = -1;
   let docCol = -1;
+  let typeCol = -1;
 
-  for (let i = 0; i < Math.min(rows.length, 15); i++) {
-    const row = rows[i].map(c => (c || '').toString().trim().toLowerCase());
-    
-    const dIdx = row.findIndex(c => c.includes('data') || c === 'dt' || c === 'date');
-    const vIdx = row.findIndex(c => c.includes('valor') || c === 'amount' || c === 'quantia');
-    const crIdx = row.findIndex(c => c.includes('crédito') || c.includes('credito') || c === 'entradas');
-    const dbIdx = row.findIndex(c => c.includes('débito') || c.includes('debito') || c === 'saídas' || c === 'saidas');
-    const sIdx = row.findIndex(c => c.includes('histórico') || c.includes('historico') || c.includes('descri') || c.includes('lançamento') || c.includes('lancamento') || c === 'memo');
+  // Search for the header row among the first 50 lines (supports statements with long preambles)
+  for (let i = 0; i < Math.min(rows.length, 50); i++) {
+    const rawRow = rows[i] || [];
+    const row = rawRow.map((c) => cleanHeaderCell(c));
 
-    if (dIdx !== -1 && (vIdx !== -1 || (crIdx !== -1 && dbIdx !== -1)) && sIdx !== -1) {
+    // Prefer exact 'data', 'data mov', 'data lanc' over secondary date columns like 'data do balancete'
+    let dIdx = row.findIndex(
+      (c) => c === 'data' || c === 'dt' || c === 'date' || c.startsWith('data mov') || c.startsWith('data lanc')
+    );
+    if (dIdx === -1) {
+      dIdx = row.findIndex((c) => c.includes('data') || c.includes('date') || c.includes('periodo'));
+    }
+
+    const sIdx = row.findIndex(
+      (c) =>
+        c.includes('hist') ||
+        c.includes('desc') ||
+        c.includes('lanc') ||
+        c.includes('memo') ||
+        c.includes('detalhe') ||
+        c.includes('movimentacao')
+    );
+
+    const crIdx = row.findIndex(
+      (c) => c.includes('credit') || c.includes('entrada') || c.includes('receb')
+    );
+    const dbIdx = row.findIndex(
+      (c) => c.includes('debit') || c.includes('saida') || c.includes('pag')
+    );
+
+    // Amount column (exclude 'saldo')
+    let vIdx = row.findIndex(
+      (c) =>
+        (c.includes('valor') ||
+          c.includes('quantia') ||
+          c.includes('montante') ||
+          c === 'amount' ||
+          c === 'val') &&
+        !c.includes('saldo')
+    );
+    if (vIdx === -1 && crIdx === -1) {
+      vIdx = row.findIndex((c) => c.includes('valor'));
+    }
+
+    if (dIdx !== -1 && sIdx !== -1 && (vIdx !== -1 || (crIdx !== -1 && dbIdx !== -1))) {
       headerIndex = i;
       dateCol = dIdx;
       descCol = sIdx;
-      // Prioritize explicit credit/debit columns over generic amount
       if (crIdx !== -1 && dbIdx !== -1) {
-          amountCol = -1; // Force use of cr/db cols
-          creditCol = crIdx;
-          debitCol = dbIdx;
+        creditCol = crIdx;
+        debitCol = dbIdx;
+        amountCol = -1;
       } else {
-          amountCol = vIdx;
-          creditCol = -1;
-          debitCol = -1;
+        amountCol = vIdx;
+        creditCol = -1;
+        debitCol = -1;
       }
-      docCol = row.findIndex(c => c.includes('doc') || c.includes('identificador') || c.includes('número') || c.includes('numero'));
+
+      docCol = row.findIndex(
+        (c) =>
+          c.includes('doc') ||
+          c.includes('ident') ||
+          c.includes('num') ||
+          c.includes('nro') ||
+          c.includes('comprovante') ||
+          c.includes('autentica') ||
+          c.includes('lote')
+      );
+
+      typeCol = row.findIndex(
+        (c) =>
+          c === 'tipo' ||
+          c === 'd/c' ||
+          c === 'dc' ||
+          c.includes('natureza') ||
+          c.includes('operacao')
+      );
       break;
     }
   }
 
-  // ... further down, inside the loop ...
+  // Heuristic column detection fallback if no textual header was recognized
+  if (headerIndex === -1) {
+    const maxCols = Math.max(...rows.slice(0, 30).map((r) => r.length));
+    const colStats: { dates: number; amounts: number; textLen: number }[] = [];
+    for (let c = 0; c < maxCols; c++) {
+      colStats[c] = { dates: 0, amounts: 0, textLen: 0 };
+    }
 
-  function isCurrencyFormat(val: string): boolean {
-      // Look for format like 0,00 or 0.00
-      return /[\d]+[.,][\d]{2}/.test(val);
-  }
+    for (let r = 0; r < Math.min(rows.length, 30); r++) {
+      const row = rows[r];
+      if (!row || row.length < 2) continue;
+      for (let c = 0; c < row.length; c++) {
+        const val = (row[c] || '').trim();
+        if (normalizeCsvDate(val)) colStats[c].dates++;
+        if (parseCurrency(val) !== 0) colStats[c].amounts++;
+        colStats[c].textLen += val.length;
+      }
+    }
 
-  // Bradesco specific check: detect column structure based on row content if header detection is unreliable
-  // Based on user data: [date, description, doc, amount, ...]
-  if (headerIndex !== -1) {
-    const headerRow = rows[headerIndex].map(c => c.toLowerCase());
-    
-    // Check if column 2 looks like a description and column 3 like amount
-    if (headerRow[1].includes('descri') && headerRow[3].includes('valor')) {
-        dateCol = 0;
-        descCol = 1;
-        docCol = 2;
-        amountCol = 3;
-        creditCol = -1;
-        debitCol = -1;
+    let bestDate = -1, maxDates = 0;
+    let bestAmount = -1, maxAmounts = 0;
+    for (let c = 0; c < maxCols; c++) {
+      if (colStats[c].dates > maxDates) {
+        maxDates = colStats[c].dates;
+        bestDate = c;
+      }
+      if (colStats[c].amounts > maxAmounts && c !== bestDate) {
+        maxAmounts = colStats[c].amounts;
+        bestAmount = c;
+      }
+    }
+
+    if (bestDate !== -1 && bestAmount !== -1) {
+      dateCol = bestDate;
+      amountCol = bestAmount;
+      let bestDesc = -1, maxDescLen = 0;
+      for (let c = 0; c < maxCols; c++) {
+        if (c !== dateCol && c !== amountCol && colStats[c].textLen > maxDescLen) {
+          maxDescLen = colStats[c].textLen;
+          bestDesc = c;
+        }
+      }
+      descCol = bestDesc !== -1 ? bestDesc : (dateCol === 0 ? 1 : 0);
+      headerIndex = 0;
+      for (let r = 0; r < rows.length; r++) {
+        if (normalizeCsvDate(rows[r][dateCol] || '')) {
+          headerIndex = Math.max(0, r - 1);
+          break;
+        }
+      }
     }
   }
-
-  // Fallback to strict indexes if header detection fails for Bradesco
-  if (amountCol === -1 && creditCol === -1 && debitCol === -1) {
-      dateCol = 0;
-      descCol = 1;
-      docCol = 2;
-      amountCol = 3;
-  }
-
-
 
   if (headerIndex === -1) {
     headerIndex = 0;
@@ -99,8 +206,9 @@ export function parseCsvStatement(
   }
 
   const transactions: ParsedTransaction[] = [];
+  const startRow = headerIndex + 1;
 
-  for (let i = headerIndex + 1; i < rows.length; i++) {
+  for (let i = startRow; i < rows.length; i++) {
     const row = rows[i];
     if (!row || row.length < 2) continue;
 
@@ -109,7 +217,7 @@ export function parseCsvStatement(
     if (!rawDate || !rawDesc) continue;
 
     if (isBalanceLine(rawDesc, rawDesc)) {
-      continue; // Skip daily/monthly/accumulated balance rows
+      continue; // Skip balance lines (Saldo do dia, Saldo anterior, etc.)
     }
 
     const normalizedDate = normalizeCsvDate(rawDate);
@@ -135,23 +243,47 @@ export function parseCsvStatement(
       const parsedVal = parseCurrency(rawVal);
       if (parsedVal === 0) continue;
 
-      const isExplicitDebit = String(rawVal).includes('-') || String(rawVal).toUpperCase().endsWith('D') || String(rawVal).includes('(');
-      const isExplicitCredit = String(rawVal).includes('+') || String(rawVal).toUpperCase().endsWith('C');
+      let explicitType: 'CREDIT' | 'DEBIT' | null = null;
+      if (typeCol !== -1) {
+        const rawType = cleanHeaderCell(row[typeCol] || '');
+        if (rawType.startsWith('c') || rawType.includes('cred') || rawType.includes('entrad')) {
+          explicitType = 'CREDIT';
+        } else if (rawType.startsWith('d') || rawType.includes('deb') || rawType.includes('said')) {
+          explicitType = 'DEBIT';
+        }
+      }
 
-      if (isExplicitDebit) {
+      const isExplicitDebit =
+        String(rawVal).includes('-') ||
+        String(rawVal).toUpperCase().endsWith('D') ||
+        String(rawVal).includes('(');
+      const isExplicitCredit =
+        String(rawVal).includes('+') || String(rawVal).toUpperCase().endsWith('C');
+
+      if (explicitType) {
+        type = explicitType;
+      } else if (isExplicitDebit) {
         type = 'DEBIT';
-        amount = Math.abs(parsedVal);
       } else if (isExplicitCredit) {
         type = 'CREDIT';
-        amount = Math.abs(parsedVal);
       } else {
         type = parsedVal >= 0 ? 'CREDIT' : 'DEBIT';
-        amount = Math.abs(parsedVal);
       }
+      amount = Math.abs(parsedVal);
     }
 
-    const docNumber = docCol !== -1 ? (row[docCol] || '').toString().trim() : '';
-    const fitid = docNumber || `CSV-${i}-${normalizedDate}-${amount.toFixed(2)}`;
+    const rawDoc = docCol !== -1 ? (row[docCol] || '').toString().trim() : '';
+    // Avoid treating trivial doc values (0, 000000, -, PIX) as unique IDs
+    const isTrivialDoc =
+      !rawDoc ||
+      rawDoc === '0' ||
+      /^0+$/.test(rawDoc) ||
+      rawDoc === '-' ||
+      rawDoc.toLowerCase() === 'pix';
+
+    const fitid = !isTrivialDoc
+      ? rawDoc
+      : `CSV-${i}-${normalizedDate}-${amount.toFixed(2)}`;
 
     const isPix = checkIfPix(rawDesc, rawDesc);
     const isPixReturn = checkIfPixReturn(rawDesc, rawDesc);
@@ -169,9 +301,9 @@ export function parseCsvStatement(
       date: normalizedDate,
       type,
       amount,
-      description: rawDesc, // FULL, never truncated
-      memo: rawDesc, // FULL, never truncated
-      documentNumber: docNumber || undefined,
+      description: rawDesc,
+      memo: rawDesc,
+      documentNumber: !isTrivialDoc ? rawDoc : undefined,
       isPix,
       isPixReturn,
       counterpartyName,
@@ -180,7 +312,7 @@ export function parseCsvStatement(
     });
   }
 
-  const dates = transactions.map(t => t.date).sort();
+  const dates = transactions.map((t) => t.date).sort();
 
   return {
     bankName,
@@ -196,35 +328,25 @@ export function parseCurrency(val: any): number {
   let str = String(val).trim();
   if (!str) return 0;
 
-  const isNegative = str.includes('-') || (str.startsWith('(') && str.endsWith(')'));
-  // Remove currency symbols, spaces, parentheses, CD indicators, but keep commas/dots for now
-  str = str.replace(/[R$\s()CDcd]/g, '');
+  const isNegative =
+    str.includes('-') ||
+    (str.startsWith('(') && str.endsWith(')')) ||
+    str.toUpperCase().endsWith('D');
 
-  // If there's both a comma and a dot, we need to determine which one is the decimal separator.
-  // Bradesco format often uses dots for thousands and comma for decimal (e.g., 1.234,56).
+  // Strip symbols, spaces, parentheses, CD indicators, and stray signs
+  str = str.replace(/[R$\s()CDcd]/g, '').replace(/-/g, '');
+
   if (str.includes(',') && str.includes('.')) {
-    // If comma is at the end or near the end, it's likely the decimal separator
     if (str.lastIndexOf(',') > str.lastIndexOf('.')) {
-      // 1.234,56 -> 1234.56
       str = str.replace(/\./g, '').replace(',', '.');
     } else {
-      // 1,234.56 -> 1234.56
       str = str.replace(/,/g, '');
     }
   } else if (str.includes(',')) {
-    // 1234,56 -> 1234.56
     str = str.replace(',', '.');
   } else if (str.includes('.') && str.length > 3) {
-    // Check if the dot is a thousands separator or decimal separator.
-    // If there are exactly two digits after the dot, it might be a decimal.
-    // However, Bradesco files often put the dot for thousands.
-    // Let's assume dot is thousands separator if there are 3 digits after it, 
-    // or if we have another logic.
-    // The problematic case "460.997" is likely 460997.
-    
-    // Heuristic: If we have multiple dots or the dot is followed by 3 digits, it's likely a thousands separator.
     if (/\.\d{3}$/.test(str)) {
-        str = str.replace(/\./g, '');
+      str = str.replace(/\./g, '');
     }
   }
 
@@ -234,7 +356,9 @@ export function parseCurrency(val: any): number {
 }
 
 export function normalizeCsvDate(raw: string): string | null {
+  if (!raw) return null;
   const str = raw.trim();
+
   const brMatch = str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
   if (brMatch) {
     let day = brMatch[1].padStart(2, '0');
@@ -252,6 +376,11 @@ export function normalizeCsvDate(raw: string): string | null {
     const month = isoMatch[2].padStart(2, '0');
     const day = isoMatch[3].padStart(2, '0');
     return `${year}-${month}-${day}`;
+  }
+
+  const digits8 = str.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (digits8) {
+    return `${digits8[1]}-${digits8[2]}-${digits8[3]}`;
   }
 
   return null;

@@ -442,6 +442,8 @@ export async function loadSnapshotFromCloudSql(): Promise<Buffer | null> {
 
 // Track the raw byte size of the last known healthy DB saved to Cloud SQL
 let knownHealthyRawBytes = 0;
+// Track the transaction count of the last known healthy DB saved to Cloud SQL
+let knownHealthyTxCount = 0;
 // Hash SHA-256 do último buffer salvo com sucesso no Supabase para evitar uploads idênticos redundantes
 let lastUploadedHash = '';
 
@@ -452,11 +454,29 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
     return;
   }
 
-  // SAFETY SHIELD: Only block truly empty/corrupted databases (< 10KB)
+  // SAFETY SHIELD 1: Only block truly empty/corrupted databases (< 10KB)
   const EMPTY_DB_THRESHOLD = 10000;
   if (buffer.length < EMPTY_DB_THRESHOLD) {
     console.error(
       `[CloudSQL SAFETY SHIELD] BLOCKED: Buffer is only ${buffer.length} bytes (likely empty/corrupted). Refusing to overwrite.`
+    );
+    return;
+  }
+
+  // SAFETY SHIELD 2: Validate that buffer is a valid SQLite DB with readable tables
+  const validation = validateSnapshotBufferSync(buffer);
+  if (!validation.usable) {
+    console.error(
+      `[CloudSQL SAFETY SHIELD] BLOCKED: Buffer não é utilizável (${validation.motivo}). Recusando sobrescrever.`
+    );
+    return;
+  }
+
+  // SAFETY SHIELD 3: Never allow writing fewer transactions than what is already confirmed in Supabase!
+  if (knownHealthyTxCount > 0 && validation.transacoes < knownHealthyTxCount) {
+    console.error(
+      `[CloudSQL SAFETY SHIELD] BLOCKED: Tentativa de sobrescrever com menos transações ` +
+      `(${validation.transacoes} no buffer vs ${knownHealthyTxCount} conhecidas no Supabase). Operação bloqueada.`
     );
     return;
   }
@@ -522,6 +542,7 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
         ).catch(() => {});
 
         knownHealthyRawBytes = buffer.length;
+        knownHealthyTxCount = Math.max(knownHealthyTxCount, validation.transacoes);
         lastUploadedHash = currentHash;
         console.log(`[CloudSQL] ✅ Saved: ${buffer.length} raw → ${compressed.length} gzip (lvl 9) → ${b64.length} b64 (attempt ${attempt})`);
         // Só grava histórico depois que o slot principal foi salvo com sucesso
@@ -886,11 +907,17 @@ export async function getDatabase(): Promise<Database> {
         if (!localHasData || !localBuf) {
           console.log(`[DB] Arquivo local sem dados. Baixando snapshot do Supabase (${(meta.dataBytes / 1024 / 1024).toFixed(2)} MB)...`);
           shouldDownloadCloud = true;
-        } else if (meta.updatedMs > 0 && localFileLastWriteMs > 0 && meta.updatedMs > localFileLastWriteMs + 60_000) {
+        } else if (meta.updatedMs > 0 && localFileLastWriteMs > 0 && meta.updatedMs > localFileLastWriteMs) {
           console.log(
             `[DB] Snapshot do Supabase é mais recente que o local ` +
             `(nuvem: ${new Date(meta.updatedMs).toISOString()}, local: ${new Date(localFileLastWriteMs).toISOString()}). ` +
             `Baixando atualização...`
+          );
+          shouldDownloadCloud = true;
+        } else if (meta.dataBytes > 0 && Math.abs(meta.dataBytes - (localBuf?.length || 0)) > 500) {
+          console.log(
+            `[DB] Tamanho do snapshot no Supabase difere do arquivo local (nuvem: ${meta.dataBytes} bytes, local: ${localBuf?.length} bytes). ` +
+            `Baixando atualização para conferência...`
           );
           shouldDownloadCloud = true;
         } else {
@@ -902,6 +929,8 @@ export async function getDatabase(): Promise<Database> {
           instance = new SQL.Database(localBuf);
           bootSource = 'local';
           bootSnapshotBytes = localBuf.length;
+          const locVal = validateSnapshotBufferSync(localBuf);
+          knownHealthyTxCount = locVal.transacoes;
           shouldDownloadCloud = false;
         }
       }
@@ -921,21 +950,37 @@ export async function getDatabase(): Promise<Database> {
               instance = new SQL.Database(localBuf);
               bootSource = 'local';
               bootSnapshotBytes = localBuf.length;
+              const locVal = validateSnapshotBufferSync(localBuf);
+              knownHealthyTxCount = locVal.transacoes;
             }
           } else {
-            instance = new SQL.Database(cloudBuffer);
-            bootSource = 'supabase';
-            bootSnapshotBytes = cloudBuffer.length;
-            try {
-              if (fs.existsSync(DB_FILE) && localFileLastWriteMs > cloudSnapshotUpdatedMs) {
-                fs.copyFileSync(DB_FILE, `${DB_FILE}.prev`);
-              }
-            } catch (_) {}
-            try {
-              fs.writeFileSync(DB_FILE, cloudBuffer);
-              markLocalFileFresh();
-            } catch (_) {}
-            console.log(`[DB] Database restored from Supabase snapshot (${cloudBuffer.length} bytes, ${snapshotUsable.transacoes} transações).`);
+            const locVal = localHasData && localBuf ? validateSnapshotBufferSync(localBuf) : { usable: false, transacoes: 0 };
+            if (localHasData && locVal.transacoes > snapshotUsable.transacoes) {
+              console.warn(
+                `[DB] ⚠️ Arquivo local tem mais transações (${locVal.transacoes}) que a nuvem (${snapshotUsable.transacoes}). ` +
+                `Preservando o arquivo local e sincronizando com o Supabase.`
+              );
+              instance = new SQL.Database(localBuf!);
+              bootSource = 'local';
+              bootSnapshotBytes = localBuf!.length;
+              knownHealthyTxCount = locVal.transacoes;
+              persistDatabaseSync();
+            } else {
+              instance = new SQL.Database(cloudBuffer);
+              bootSource = 'supabase';
+              bootSnapshotBytes = cloudBuffer.length;
+              knownHealthyTxCount = snapshotUsable.transacoes;
+              try {
+                if (fs.existsSync(DB_FILE) && localFileLastWriteMs > cloudSnapshotUpdatedMs) {
+                  fs.copyFileSync(DB_FILE, `${DB_FILE}.prev`);
+                }
+              } catch (_) {}
+              try {
+                fs.writeFileSync(DB_FILE, cloudBuffer);
+                markLocalFileFresh();
+              } catch (_) {}
+              console.log(`[DB] Database restored from Supabase snapshot (${cloudBuffer.length} bytes, ${snapshotUsable.transacoes} transações).`);
+            }
           }
         }
       }
@@ -1152,17 +1197,7 @@ process.on('SIGTERM', () => {
     try {
       const data = dbInstance.export();
       const buffer = Buffer.from(data);
-      const compressed = gzipSync(buffer, { level: 1 });
-      const b64 = compressed.toString('base64');
-      const pool = getCloudSqlPool();
-      if (pool) {
-        pool.query(
-          `INSERT INTO system_snapshots (key, data, updated_at) 
-           VALUES ('main_db', $1, NOW()) 
-           ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-          [b64]
-        ).catch(() => {});
-      }
+      saveSnapshotToCloudSql(buffer);
     } catch (_) {}
   }
 });
@@ -1730,9 +1765,8 @@ export function startBackupScheduler(): void {
     try {
       if (!dbInstance) return;
       createLocalBackup('periodic');
-      // Garante que o Cloud SQL receba o estado atual mesmo sem operação de negócio
-      const data = dbInstance.export();
-      saveSnapshotToCloudSql(Buffer.from(data));
+      // Sincroniza com o Cloud SQL usando persistDatabase (com validação, verificação de hash e backups)
+      persistDatabase();
     } catch (err: any) {
       console.error('[Backup] Falha no backup periódico:', err?.message || err);
     }

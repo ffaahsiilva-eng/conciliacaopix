@@ -84,8 +84,21 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       setErrorMsg(null);
       setSuccessResult(null);
 
-      const content = await selectedFile.text();
+      let content = await selectedFile.text();
       const isOfx = selectedFile.name.toLowerCase().endsWith('.ofx');
+
+      // Se for CSV/TXT e contiver caractere de substituição (\uFFFD), o banco exportou em ISO-8859-1/Windows-1252.
+      // Decodifica com windows-1252 para manter 100% dos acentos e colunas íntegras ("Histórico", "Lançamento", etc.).
+      if (!isOfx && (content.includes('\uFFFD') || /[\u0080-\u00FF]/.test(content))) {
+        try {
+          const buffer = await selectedFile.arrayBuffer();
+          const decoder = new TextDecoder('windows-1252');
+          const decoded = decoder.decode(buffer);
+          if (!decoded.includes('\uFFFD')) {
+            content = decoded;
+          }
+        } catch (_) {}
+      }
 
       const res = await api.uploadStatement({
         filename: selectedFile.name,
