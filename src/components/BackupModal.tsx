@@ -116,7 +116,16 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ webhookUrl: urlToSend })
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(rawText);
+      } catch (_) {
+        if (res.status === 504 || rawText.includes('FUNCTION_INVOCATION_TIMEOUT') || rawText.includes('timeout')) {
+          throw new Error('Tempo limite excedido. No Google Apps Script, confirme se a permissão "Quem pode acessar" está como "Qualquer pessoa" (Anyone).');
+        }
+        throw new Error(rawText.slice(0, 200) || `Erro no servidor (HTTP ${res.status})`);
+      }
       if (!res.ok || !data.success) {
         throw new Error(data.message || data.error || 'Erro ao sincronizar com Google Drive.');
       }

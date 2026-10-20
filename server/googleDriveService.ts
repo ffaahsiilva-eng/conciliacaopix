@@ -112,7 +112,15 @@ export async function executeGoogleDriveSync(
     const drivers = queryAll('SELECT * FROM drivers');
     const bank_accounts = queryAll('SELECT * FROM bank_accounts');
     const import_batches = queryAll('SELECT * FROM import_batches');
-    const transactions = queryAll('SELECT * FROM transactions ORDER BY date DESC, created_at DESC');
+    const transactions = queryAll(`
+      SELECT id, company_id, import_batch_id, bank_name, bank_code, fitid, date, type, amount,
+             original_amount, returned_amount, description, memo, document_number, is_pix,
+             is_pix_return, return_reason, status, reconciled_at, reconciled_by_user_id,
+             reconciled_by_user_name, driver_id, driver_name, driver_plate, session_id,
+             voucher_number, notes, counterparty_name, counterparty_doc, linked_tx_id, created_at
+      FROM transactions
+      ORDER BY date DESC, created_at DESC
+    `);
     const reconciliation_sessions = queryAll('SELECT * FROM reconciliation_sessions ORDER BY started_at DESC');
     const audit_logs = queryAll('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 500');
 
@@ -141,8 +149,8 @@ export async function executeGoogleDriveSync(
 
     // 2. Preparar linhas estruturadas para o Google Sheets / Excel
     // O backup JSON completo acima preserva 100% de todas as 12.000 transações.
-    // Na planilha, enviamos as 1.500 mais recentes para carregar instantaneamente sem estourar o limite de tempo do Google Apps Script.
-    const recentTransactions = transactions.slice(0, 1500);
+    // Na planilha, enviamos as 1.000 mais recentes para carregar instantaneamente sem estourar o limite de tempo do Google Apps Script.
+    const recentTransactions = transactions.slice(0, 1000);
     const transactionsHeaders = [
       'Data',
       'Empresa',
@@ -254,15 +262,16 @@ export async function executeGoogleDriveSync(
     });
 
     const respText = await response.text();
-    let respJson: any;
-    try {
-      respJson = JSON.parse(respText);
-    } catch (_) {
-      respJson = { success: response.ok, message: respText };
-    }
+    const isHtmlResponse =
+      respText.includes('<html') ||
+      respText.includes('<!DOCTYPE') ||
+      respText.includes('Você precisa ter acesso') ||
+      respText.includes("window['ppConfig']") ||
+      respText.includes('accounts.google.com');
 
-    if (response.status === 403) {
-      const msg = "Erro 403 (Permissão do Google): No Apps Script, clique em 'Implantar' > 'Gerenciar implantações' > Editar (ícone de lápis) > Em 'Quem pode acessar', selecione 'Qualquer pessoa' (Anyone) e salve.";
+    if (response.status === 403 || response.status === 401 || isHtmlResponse) {
+      const msg =
+        "Permissão necessária no Google Apps Script: No Apps Script, clique no botão azul 'Implantar' > 'Gerenciar implantações' > Editar (ícone de lápis) > Em 'Quem pode acessar', selecione 'Qualquer pessoa' (Anyone) e salve. Atualmente o Google está exigindo login e bloqueando o envio automático.";
       db.run(
         `INSERT INTO system_settings (key, value, updated_at) VALUES ('google_drive_last_status', 'error', datetime('now'))
          ON CONFLICT(key) DO UPDATE SET value = 'error', updated_at = datetime('now')`
@@ -273,6 +282,13 @@ export async function executeGoogleDriveSync(
         [msg]
       );
       return { success: false, message: msg };
+    }
+
+    let respJson: any;
+    try {
+      respJson = JSON.parse(respText);
+    } catch (_) {
+      respJson = { success: response.ok, message: respText };
     }
 
     const now = new Date().toISOString();

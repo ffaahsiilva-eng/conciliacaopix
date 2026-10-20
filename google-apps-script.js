@@ -37,7 +37,7 @@ function doPost(e) {
     var folders = DriveApp.getFoldersByName(folderName);
     var folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
 
-    var backupJson = JSON.stringify(payload.backupData || payload, null, 2);
+    var backupJson = JSON.stringify(payload.backupData || payload);
     var fileName = "conciliapix-backup-" + dateStamp + ".json";
     folder.createFile(fileName, backupJson, MimeType.PLAIN_TEXT);
 
