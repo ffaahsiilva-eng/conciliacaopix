@@ -339,7 +339,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
                     Clique no botão azul <strong>Implantar &gt; Nova implantação</strong>.
                     <ul className="list-disc list-inside ml-4 mt-0.5 text-slate-500">
                       <li>Tipo (ícone de engrenagem): <strong>App da Web</strong></li>
-                      <li>Quem pode acessar: <strong>Qualquer pessoa (Anyone)</strong></li>
+                      <li>Quem pode acessar: <strong className="text-amber-800 bg-amber-100 px-1 py-0.5 rounded font-bold">Qualquer pessoa (Anyone)</strong> — <em>Obrigatório para o Google autorizar a conexão!</em></li>
                     </ul>
                   </li>
                   <li>

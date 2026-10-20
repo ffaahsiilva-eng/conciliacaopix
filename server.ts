@@ -16,6 +16,7 @@ import { parseCsvStatement } from './server/parsers/csvParser.js';
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-fallback-key-change-in-production';
+const isVercel = !!process.env.VERCEL;
 
 // ==========================================
 // 1. BLINDAGEM DE SEGURANÇA (SECURITY HEADERS)
@@ -122,6 +123,18 @@ app.use('/api', (req, res, next) => {
 
 // SSE Endpoint for real-time cloud sync across all connected operators
 app.get('/api/events', (req: Request, res: Response) => {
+  if (isVercel) {
+    // No Vercel Serverless, manter conexões SSE abertas trava slots de execução lambda,
+    // esgotando o limite de concorrência e forçando cold starts lentos de 5s em cada clique.
+    // Retorna flag isServerless e encerra imediatamente; o frontend usa o polling já existente.
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'close');
+    res.write(`data: ${JSON.stringify({ type: 'CONNECTED', isServerless: true })}\n\n`);
+    res.end();
+    return;
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -605,27 +618,36 @@ app.get('/api/drivers', async (req, res) => {
     const drivers = await queryAll(
       `
       SELECT d.*,
-             COUNT(DISTINCT s.id) as total_sessions,
-             COUNT(DISTINCT CASE WHEN t.status = 'RECONCILED' THEN t.id END) as total_reconciled_pix_count,
-             COALESCE(SUM(CASE WHEN t.status = 'RECONCILED' THEN t.amount ELSE 0 END), 0) as total_reconciled_amount,
-             COALESCE(SUM(s.missing_amount), 0) as total_missing_amount,
+             COALESCE(s_stats.total_sessions, 0) as total_sessions,
+             COALESCE(t_stats.total_reconciled_pix_count, 0) as total_reconciled_pix_count,
+             COALESCE(t_stats.total_reconciled_amount, 0) as total_reconciled_amount,
+             COALESCE(s_stats.total_missing_amount, 0) as total_missing_amount,
              active.session_id AS active_session_id,
              active.operator_user_id AS active_operator_user_id,
              active.operator_user_name AS active_operator_user_name,
              active.started_at AS active_session_started_at
       FROM drivers d
-      LEFT JOIN reconciliation_sessions s ON s.driver_id = d.id AND s.status = 'COMPLETED'
-      LEFT JOIN transactions t ON t.driver_id = d.id AND t.status = 'RECONCILED'
       LEFT JOIN (
-        SELECT driver_id, company_id, id AS session_id, operator_user_id, operator_user_name, started_at
+        SELECT driver_id, COUNT(id) as total_sessions, SUM(missing_amount) as total_missing_amount
         FROM reconciliation_sessions
-        WHERE status = 'IN_PROGRESS'
-      ) active ON active.driver_id = d.id AND active.company_id = d.company_id
+        WHERE status = 'COMPLETED' AND company_id = ?
+        GROUP BY driver_id
+      ) s_stats ON s_stats.driver_id = d.id
+      LEFT JOIN (
+        SELECT driver_id, COUNT(id) as total_reconciled_pix_count, SUM(amount) as total_reconciled_amount
+        FROM transactions
+        WHERE status = 'RECONCILED' AND company_id = ?
+        GROUP BY driver_id
+      ) t_stats ON t_stats.driver_id = d.id
+      LEFT JOIN (
+        SELECT driver_id, id AS session_id, operator_user_id, operator_user_name, started_at
+        FROM reconciliation_sessions
+        WHERE status = 'IN_PROGRESS' AND company_id = ?
+      ) active ON active.driver_id = d.id
       WHERE d.company_id = ?
-      GROUP BY d.id
       ORDER BY d.name ASC
     `,
-      [companyId]
+      [companyId, companyId, companyId, companyId]
     );
 
     // Normaliza `active_session` em um único objeto (ou null) para a UI.

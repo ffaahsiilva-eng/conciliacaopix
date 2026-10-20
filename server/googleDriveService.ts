@@ -140,6 +140,9 @@ export async function executeGoogleDriveSync(
     };
 
     // 2. Preparar linhas estruturadas para o Google Sheets / Excel
+    // O backup JSON completo acima preserva 100% de todas as 12.000 transações.
+    // Na planilha, enviamos as 1.500 mais recentes para carregar instantaneamente sem estourar o limite de tempo do Google Apps Script.
+    const recentTransactions = transactions.slice(0, 1500);
     const transactionsHeaders = [
       'Data',
       'Empresa',
@@ -156,7 +159,7 @@ export async function executeGoogleDriveSync(
       'Observações',
     ];
 
-    const transactionsRows = transactions.map((t: any) => [
+    const transactionsRows = recentTransactions.map((t: any) => [
       t.date || '',
       t.company_id === 'filial' ? 'Filial 01' : 'Matriz',
       t.bank_name || '',
@@ -258,9 +261,23 @@ export async function executeGoogleDriveSync(
       respJson = { success: response.ok, message: respText };
     }
 
+    if (response.status === 403) {
+      const msg = "Erro 403 (Permissão do Google): No Apps Script, clique em 'Implantar' > 'Gerenciar implantações' > Editar (ícone de lápis) > Em 'Quem pode acessar', selecione 'Qualquer pessoa' (Anyone) e salve.";
+      db.run(
+        `INSERT INTO system_settings (key, value, updated_at) VALUES ('google_drive_last_status', 'error', datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value = 'error', updated_at = datetime('now')`
+      );
+      db.run(
+        `INSERT INTO system_settings (key, value, updated_at) VALUES ('google_drive_last_message', ?, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+        [msg]
+      );
+      return { success: false, message: msg };
+    }
+
     const now = new Date().toISOString();
     const success = response.ok && respJson.success !== false;
-    const msg = respJson.message || (success ? 'Sincronizado com sucesso!' : 'Erro na sincronização.');
+    const msg = respJson.message || (success ? 'Sincronizado com sucesso!' : `Erro na sincronização (HTTP ${response.status}).`);
 
     db.run(
       `INSERT INTO system_settings (key, value, updated_at) VALUES ('google_drive_last_sync', ?, datetime('now'))

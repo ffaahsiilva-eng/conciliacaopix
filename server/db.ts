@@ -484,8 +484,8 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
     return;
   }
 
-  // Compress with level 9 (maximum compression to save Supabase storage and bandwidth)
-  const compressed = gzipSync(buffer, { level: 9 });
+  // Compress with level 1 (fastest speed, minimal CPU usage to prevent request latency)
+  const compressed = gzipSync(buffer, { level: 1 });
   const b64 = compressed.toString('base64');
 
   // Garante que a tabela system_snapshots existe
@@ -1152,7 +1152,7 @@ process.on('SIGTERM', () => {
     try {
       const data = dbInstance.export();
       const buffer = Buffer.from(data);
-      const compressed = gzipSync(buffer, { level: 9 });
+      const compressed = gzipSync(buffer, { level: 1 });
       const b64 = compressed.toString('base64');
       const pool = getCloudSqlPool();
       if (pool) {
@@ -1415,7 +1415,10 @@ function initSchema(db: Database): void {
     db.run(`ALTER TABLE transactions ADD COLUMN returned_amount REAL NOT NULL DEFAULT 0`);
   } catch (_) {}
   try {
-    db.run(`UPDATE transactions SET original_amount = amount WHERE original_amount IS NULL`);
+    const checkNull = db.exec("SELECT 1 FROM transactions WHERE original_amount IS NULL LIMIT 1");
+    if (checkNull.length > 0 && checkNull[0].values.length > 0) {
+      db.run(`UPDATE transactions SET original_amount = amount WHERE original_amount IS NULL`);
+    }
   } catch (_) {}
   try {
     db.run(`ALTER TABLE transactions ADD COLUMN locked_by_user_id TEXT`);
@@ -1425,6 +1428,24 @@ function initSchema(db: Database): void {
   } catch (_) {}
   try {
     db.run(`ALTER TABLE transactions ADD COLUMN locked_by_session_id TEXT`);
+  } catch (_) {}
+
+  // Índices de alta performance essenciais para filtros instantâneos
+  try {
+    db.run(`
+      CREATE INDEX IF NOT EXISTS idx_trans_status ON transactions(status);
+      CREATE INDEX IF NOT EXISTS idx_trans_date ON transactions(date);
+      CREATE INDEX IF NOT EXISTS idx_trans_driver ON transactions(driver_id);
+      CREATE INDEX IF NOT EXISTS idx_trans_session ON transactions(session_id);
+      CREATE INDEX IF NOT EXISTS idx_trans_fitid ON transactions(fitid);
+      CREATE INDEX IF NOT EXISTS idx_trans_company ON transactions(company_id);
+      CREATE INDEX IF NOT EXISTS idx_trans_comp_status ON transactions(company_id, status);
+      CREATE INDEX IF NOT EXISTS idx_trans_comp_status_date ON transactions(company_id, status, date DESC);
+      CREATE INDEX IF NOT EXISTS idx_trans_comp_driver ON transactions(company_id, driver_id);
+      CREATE INDEX IF NOT EXISTS idx_sess_company ON reconciliation_sessions(company_id);
+      CREATE INDEX IF NOT EXISTS idx_sess_driver ON reconciliation_sessions(driver_id);
+      CREATE INDEX IF NOT EXISTS idx_drivers_company ON drivers(company_id);
+    `);
   } catch (_) {}
 
   // Limpeza de locks de sessão órfãos.

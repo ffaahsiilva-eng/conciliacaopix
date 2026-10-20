@@ -183,9 +183,9 @@ function updateTab(ss, tabName, headers, rows, currencyColIndexes) {
     dataRange.setVerticalAlignment("middle");
   }
 
-  // Auto-ajuste de colunas
+  // Ajuste rápido de largura de colunas (execução instantânea sem travar)
   for (var c = 1; c <= headers.length; c++) {
-    sheet.autoResizeColumn(c);
+    sheet.setColumnWidth(c, c === 7 ? 280 : c === 1 ? 140 : 120);
   }
 }
 

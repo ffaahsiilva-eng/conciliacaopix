@@ -139,6 +139,13 @@ function connectSse() {
     eventSource.onmessage = (e) => {
       try {
         const parsed = JSON.parse(e.data);
+        if (parsed.isServerless) {
+          // No Vercel serverless, desativa SSE para não travar slots de execução lambda.
+          // O polling leve das telas já mantém tudo atualizado.
+          eventSource?.close();
+          eventSource = null;
+          return;
+        }
         eventListeners.forEach((cb) => cb(parsed));
       } catch (err) {
         // ignore non-json messages like heartbeat
@@ -146,13 +153,13 @@ function connectSse() {
     };
 
     eventSource.onerror = () => {
+      if (!eventSource) return; // Conexão encerrada intencionalmente
+
       const wasConnected = sseWasDisconnected;
       sseWasDisconnected = true;
 
-      if (eventSource) {
-        eventSource.close();
-        eventSource = null;
-      }
+      eventSource.close();
+      eventSource = null;
 
       // Backoff exponencial com teto de 15s e jitter. Um retry fixo de 3s
       // gerava rajada de reconexões quando o servidor estava sob carga, e a
