@@ -318,10 +318,11 @@ export interface CloudSnapshotMeta {
   ageSeconds: number | null;
   updatedMs: number;
   dataBytes: number;
+  txCount: number | null;
 }
 
 /**
- * Consulta APENAS o tamanho e a idade do snapshot no Supabase (~40 bytes).
+ * Consulta APENAS o tamanho, a contagem de transações e a idade do snapshot no Supabase (~40 bytes).
  * EVITA transferir o banco inteiro (3MB de Egress) quando o arquivo local já está atualizado.
  */
 export async function getCloudSnapshotMetadata(): Promise<CloudSnapshotMeta | null> {
@@ -329,8 +330,16 @@ export async function getCloudSnapshotMetadata(): Promise<CloudSnapshotMeta | nu
   if (!pool) return null;
 
   try {
-    const res = await safeCloudSqlQuery<{ data_len: string | null; age_seconds: string | null }>(
-      `SELECT length(data) AS data_len, EXTRACT(EPOCH FROM (NOW() - updated_at)) AS age_seconds
+    const res = await safeCloudSqlQuery<{
+      data_len: string | null;
+      age_seconds: string | null;
+      updated_ms: string | number | null;
+      tx_count: number | null;
+    }>(
+      `SELECT length(data) AS data_len,
+              EXTRACT(EPOCH FROM (NOW() - updated_at)) AS age_seconds,
+              EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_ms,
+              tx_count
          FROM system_snapshots WHERE key = 'main_db'`,
       undefined,
       15000
@@ -339,15 +348,23 @@ export async function getCloudSnapshotMetadata(): Promise<CloudSnapshotMeta | nu
     if (res && res.rows.length > 0) {
       const ageSec = Number(res.rows[0]?.age_seconds);
       const dataLen = Number(res.rows[0]?.data_len) || 0;
-      const updatedMs = Number.isFinite(ageSec) ? Date.now() - ageSec * 1000 : 0;
+      const updatedMsFromDb = Number(res.rows[0]?.updated_ms);
+      const updatedMs = Number.isFinite(updatedMsFromDb) && updatedMsFromDb > 0
+        ? updatedMsFromDb
+        : (Number.isFinite(ageSec) ? Date.now() - ageSec * 1000 : 0);
+      const txCount = res.rows[0]?.tx_count !== null && res.rows[0]?.tx_count !== undefined
+        ? Number(res.rows[0]?.tx_count)
+        : null;
+
       return {
         exists: true,
         ageSeconds: Number.isFinite(ageSec) ? ageSec : null,
         updatedMs,
         dataBytes: dataLen,
+        txCount
       };
     }
-    return { exists: false, ageSeconds: null, updatedMs: 0, dataBytes: 0 };
+    return { exists: false, ageSeconds: null, updatedMs: 0, dataBytes: 0, txCount: null };
   } catch (err: any) {
     console.warn('[CloudSQL] Falha ao consultar metadados do snapshot:', err?.message || err);
     return null;
@@ -472,11 +489,21 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
     return;
   }
 
-  // SAFETY SHIELD 3: Never allow writing fewer transactions than what is already confirmed in Supabase!
-  if (knownHealthyTxCount > 0 && validation.transacoes < knownHealthyTxCount) {
+  // SAFETY SHIELD 3: Never allow writing fewer transactions than what is confirmed in Supabase!
+  const remoteMeta = await getCloudSnapshotMetadata();
+  if (remoteMeta && remoteMeta.exists && remoteMeta.txCount !== null && remoteMeta.txCount > 0) {
+    if (validation.transacoes < remoteMeta.txCount) {
+      console.error(
+        `[CloudSQL SAFETY SHIELD] BLOCKED: Tentativa de sobrescrever com menos transações ` +
+        `(${validation.transacoes} no buffer vs ${remoteMeta.txCount} confirmadas no Supabase). Operação bloqueada.`
+      );
+      return;
+    }
+    knownHealthyTxCount = Math.max(knownHealthyTxCount, remoteMeta.txCount);
+  } else if (knownHealthyTxCount > 0 && validation.transacoes < knownHealthyTxCount) {
     console.error(
       `[CloudSQL SAFETY SHIELD] BLOCKED: Tentativa de sobrescrever com menos transações ` +
-      `(${validation.transacoes} no buffer vs ${knownHealthyTxCount} conhecidas no Supabase). Operação bloqueada.`
+      `(${validation.transacoes} no buffer vs ${knownHealthyTxCount} conhecidas localmente). Operação bloqueada.`
     );
     return;
   }
@@ -494,10 +521,10 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
     );
     try {
       await safeCloudSqlQuery(
-        `INSERT INTO system_snapshots (key, data, updated_at)
-         VALUES ('main_db_emergency_backup', $1, NOW())
-         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-        [buffer.toString('base64')],
+        `INSERT INTO system_snapshots (key, data, updated_at, tx_count)
+         VALUES ('main_db_emergency_backup', $1, NOW(), $2)
+         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW(), tx_count = EXCLUDED.tx_count`,
+        [buffer.toString('base64'), validation.transacoes],
         15000
       );
     } catch (_) {}
@@ -508,12 +535,13 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
   const compressed = gzipSync(buffer, { level: 1 });
   const b64 = compressed.toString('base64');
 
-  // Garante que a tabela system_snapshots existe
+  // Garante que a tabela system_snapshots existe com coluna tx_count
   await safeCloudSqlQuery(
     `CREATE TABLE IF NOT EXISTS system_snapshots (
        key TEXT PRIMARY KEY,
        data TEXT NOT NULL,
-       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+       tx_count INTEGER
      )`,
     undefined,
     15000
@@ -524,27 +552,29 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const result = await safeCloudSqlQuery(
-        `INSERT INTO system_snapshots (key, data, updated_at)
-         VALUES ('main_db', $1, NOW())
-         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-        [b64],
+        `INSERT INTO system_snapshots (key, data, updated_at, tx_count)
+         VALUES ('main_db', $1, NOW(), $2)
+         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW(), tx_count = EXCLUDED.tx_count`,
+        [b64, validation.transacoes],
         45000  // 45s timeout — large snapshots need more time
       );
 
       if (result) {
         // Grava cópia de backup secundária de forma não-bloqueante
         safeCloudSqlQuery(
-          `INSERT INTO system_snapshots (key, data, updated_at)
-           VALUES ('main_db_backup', $1, NOW())
-           ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-          [b64],
+          `INSERT INTO system_snapshots (key, data, updated_at, tx_count)
+           VALUES ('main_db_backup', $1, NOW(), $2)
+           ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW(), tx_count = EXCLUDED.tx_count`,
+          [b64, validation.transacoes],
           30000
         ).catch(() => {});
 
         knownHealthyRawBytes = buffer.length;
         knownHealthyTxCount = Math.max(knownHealthyTxCount, validation.transacoes);
         lastUploadedHash = currentHash;
-        console.log(`[CloudSQL] ✅ Saved: ${buffer.length} raw → ${compressed.length} gzip (lvl 9) → ${b64.length} b64 (attempt ${attempt})`);
+        cloudSnapshotUpdatedMs = Date.now();
+        lastCloudCheckMs = Date.now();
+        console.log(`[CloudSQL] ✅ Saved: ${buffer.length} raw (${validation.transacoes} txs) → ${compressed.length} gzip (lvl 1) → ${b64.length} b64 (attempt ${attempt})`);
         // Só grava histórico depois que o slot principal foi salvo com sucesso
         saveSnapshotToHistory(buffer, b64);
         return; // SUCCESS
@@ -851,9 +881,53 @@ export function getBootDiagnostics() {
   };
 }
 
+let lastCloudCheckMs = 0;
+const CLOUD_CHECK_THROTTLE_MS = 2500;
+
 export async function getDatabase(): Promise<Database> {
+  const now = Date.now();
   if (dbInstance) {
-    return dbInstance;
+    // Verificação de sincronização periódica/leve para instâncias ativas (Vercel warm containers ou local)
+    if (now - lastCloudCheckMs > CLOUD_CHECK_THROTTLE_MS) {
+      lastCloudCheckMs = now;
+      try {
+        const meta = await getCloudSnapshotMetadata();
+        if (
+          meta &&
+          meta.exists &&
+          meta.updatedMs > 0 &&
+          cloudSnapshotUpdatedMs > 0 &&
+          meta.updatedMs > cloudSnapshotUpdatedMs + 1000
+        ) {
+          console.log(
+            `[DB Sync] Snapshot na nuvem foi atualizado por outra instância ` +
+            `(nuvem: ${new Date(meta.updatedMs).toISOString()}, local: ${new Date(cloudSnapshotUpdatedMs).toISOString()}). ` +
+            `Recarregando banco em memória...`
+          );
+          const cloudBuffer = await loadSnapshotFromCloudSql();
+          if (cloudBuffer && cloudBuffer.length > 0) {
+            const val = validateSnapshotBufferSync(cloudBuffer);
+            if (val.usable) {
+              const init = typeof initSqlJs === 'function' ? initSqlJs : (initSqlJs as any)?.default || initSqlJs;
+              const SQL = bootSqlFactory || (await init());
+              dbInstance = new SQL.Database(cloudBuffer);
+              cloudSnapshotUpdatedMs = meta.updatedMs;
+              knownHealthyTxCount = val.transacoes;
+              try {
+                fs.writeFileSync(DB_FILE, cloudBuffer);
+                markLocalFileFresh();
+              } catch (_) {}
+              console.log(`[DB Sync] ✅ Banco recarregado com sucesso (${val.transacoes} transações).`);
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn('[DB Sync] Verificação rápida da nuvem falhou:', err?.message || err);
+      }
+    }
+    if (dbInstance) {
+      return dbInstance;
+    }
   }
   if (dbInitPromise) {
     return dbInitPromise;
@@ -907,17 +981,17 @@ export async function getDatabase(): Promise<Database> {
         if (!localHasData || !localBuf) {
           console.log(`[DB] Arquivo local sem dados. Baixando snapshot do Supabase (${(meta.dataBytes / 1024 / 1024).toFixed(2)} MB)...`);
           shouldDownloadCloud = true;
-        } else if (meta.updatedMs > 0 && localFileLastWriteMs > 0 && meta.updatedMs > localFileLastWriteMs) {
+        } else if (meta.updatedMs > 0 && localFileLastWriteMs > 0 && meta.updatedMs > localFileLastWriteMs + 1000) {
           console.log(
             `[DB] Snapshot do Supabase é mais recente que o local ` +
             `(nuvem: ${new Date(meta.updatedMs).toISOString()}, local: ${new Date(localFileLastWriteMs).toISOString()}). ` +
             `Baixando atualização...`
           );
           shouldDownloadCloud = true;
-        } else if (meta.dataBytes > 0 && Math.abs(meta.dataBytes - (localBuf?.length || 0)) > 500) {
+        } else if (meta.txCount !== null && meta.txCount > 0 && validateSnapshotBufferSync(localBuf).transacoes < meta.txCount) {
           console.log(
-            `[DB] Tamanho do snapshot no Supabase difere do arquivo local (nuvem: ${meta.dataBytes} bytes, local: ${localBuf?.length} bytes). ` +
-            `Baixando atualização para conferência...`
+            `[DB] Snapshot do Supabase tem mais transações (${meta.txCount}) que o arquivo local (${validateSnapshotBufferSync(localBuf).transacoes}). ` +
+            `Baixando atualização...`
           );
           shouldDownloadCloud = true;
         } else {

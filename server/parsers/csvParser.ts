@@ -145,12 +145,35 @@ export function parseCsvStatement(
     }
   }
 
+  // Detect standard Banco do Brasil 13-column layout without textual header:
+  // Col 0: Agência, Col 1: Conta, Col 3: Data Lançamento, Col 7: Doc/Fitid, Col 9: Histórico, Col 10: Valor, Col 11: C/D, Col 12: Detalhes
+  let isBb13ColLayout = false;
+  const sampleNonEmpty = rows.slice(0, 20).filter((r) => r && r.length >= 12);
+  if (headerIndex === -1 && sampleNonEmpty.length >= 1) {
+    const bbMatches = sampleNonEmpty.filter(
+      (r) =>
+        normalizeCsvDate(r[3] || '') &&
+        ['C', 'D'].includes((r[11] || '').trim().toUpperCase()) &&
+        parseCurrency(r[10]) !== 0
+    ).length;
+
+    if (bbMatches >= 1) {
+      isBb13ColLayout = true;
+      headerIndex = -1;
+      dateCol = 3;
+      descCol = 9;
+      amountCol = 10;
+      typeCol = 11;
+      docCol = 7;
+    }
+  }
+
   // Heuristic column detection fallback if no textual header was recognized
-  if (headerIndex === -1) {
+  if (headerIndex === -1 && !isBb13ColLayout) {
     const maxCols = Math.max(...rows.slice(0, 30).map((r) => r.length));
-    const colStats: { dates: number; amounts: number; textLen: number }[] = [];
+    const colStats: { dates: number; amounts: number; decimals: number; textLen: number; typeCd: number }[] = [];
     for (let c = 0; c < maxCols; c++) {
-      colStats[c] = { dates: 0, amounts: 0, textLen: 0 };
+      colStats[c] = { dates: 0, amounts: 0, decimals: 0, textLen: 0, typeCd: 0 };
     }
 
     for (let r = 0; r < Math.min(rows.length, 30); r++) {
@@ -159,30 +182,47 @@ export function parseCsvStatement(
       for (let c = 0; c < row.length; c++) {
         const val = (row[c] || '').trim();
         if (normalizeCsvDate(val)) colStats[c].dates++;
-        if (parseCurrency(val) !== 0) colStats[c].amounts++;
+        const parsedCur = parseCurrency(val);
+        if (parsedCur !== 0) {
+          colStats[c].amounts++;
+          if (/[\,\.]\d{2}$/.test(val)) colStats[c].decimals++;
+        }
+        if (['C', 'D', 'CR', 'DB'].includes(val.toUpperCase())) {
+          colStats[c].typeCd++;
+        }
         colStats[c].textLen += val.length;
       }
     }
 
     let bestDate = -1, maxDates = 0;
-    let bestAmount = -1, maxAmounts = 0;
+    let bestAmount = -1, bestAmountScore = 0;
+    let bestTypeCol = -1, maxTypeCd = 0;
+
     for (let c = 0; c < maxCols; c++) {
       if (colStats[c].dates > maxDates) {
         maxDates = colStats[c].dates;
         bestDate = c;
       }
-      if (colStats[c].amounts > maxAmounts && c !== bestDate) {
-        maxAmounts = colStats[c].amounts;
+      const score = colStats[c].decimals * 10 + colStats[c].amounts;
+      if (score > bestAmountScore && c !== bestDate) {
+        bestAmountScore = score;
         bestAmount = c;
+      }
+      if (colStats[c].typeCd > maxTypeCd && c !== bestDate) {
+        maxTypeCd = colStats[c].typeCd;
+        bestTypeCol = c;
       }
     }
 
     if (bestDate !== -1 && bestAmount !== -1) {
       dateCol = bestDate;
       amountCol = bestAmount;
+      if (maxTypeCd >= 2 && bestTypeCol !== amountCol) {
+        typeCol = bestTypeCol;
+      }
       let bestDesc = -1, maxDescLen = 0;
       for (let c = 0; c < maxCols; c++) {
-        if (c !== dateCol && c !== amountCol && colStats[c].textLen > maxDescLen) {
+        if (c !== dateCol && c !== amountCol && c !== typeCol && colStats[c].textLen > maxDescLen) {
           maxDescLen = colStats[c].textLen;
           bestDesc = c;
         }
@@ -198,7 +238,7 @@ export function parseCsvStatement(
     }
   }
 
-  if (headerIndex === -1) {
+  if (headerIndex === -1 && !isBb13ColLayout) {
     headerIndex = 0;
     dateCol = 0;
     descCol = 1;
@@ -282,18 +322,38 @@ export function parseCsvStatement(
       rawDoc.toLowerCase() === 'pix';
 
     const fitid = !isTrivialDoc
-      ? rawDoc
+      ? (isBb13ColLayout ? `BB-${rawDoc}` : rawDoc)
       : `CSV-${i}-${normalizedDate}-${amount.toFixed(2)}`;
 
-    const isPix = checkIfPix(rawDesc, rawDesc);
-    const isPixReturn = checkIfPixReturn(rawDesc, rawDesc);
+    let counterpartyName: string | undefined = undefined;
+    let counterpartyDoc: string | undefined = undefined;
+    let descToUse = rawDesc;
+    let memoToUse = rawDesc;
 
-    const { counterpartyName, counterpartyDoc } = extractCounterpartyInfo('', rawDesc, '', rawDesc);
+    if (isBb13ColLayout && row[12]) {
+      const rawDetalhe = (row[12] || '').trim();
+      memoToUse = rawDetalhe;
+      const match = rawDetalhe.match(/^(?:\d{2}\/\d{2}(?:\s+\d{2}:\d{2})?\s+)?(?:(\d{11}|\d{14})\s+)?(.*)$/);
+      if (match) {
+        if (match[1]) counterpartyDoc = match[1];
+        if (match[2] && match[2].trim()) counterpartyName = match[2].trim();
+      }
+      if (counterpartyName) {
+        descToUse = `${rawDesc} - ${counterpartyName}`;
+      }
+    } else {
+      const extracted = extractCounterpartyInfo('', rawDesc, '', rawDesc);
+      counterpartyName = extracted.counterpartyName;
+      counterpartyDoc = extracted.counterpartyDoc;
+    }
+
+    const isPix = checkIfPix(descToUse, memoToUse);
+    const isPixReturn = checkIfPixReturn(descToUse, memoToUse);
 
     const rawData = JSON.stringify({
       rowIndex: i,
       rawRow: row,
-      headerRow: rows[headerIndex]
+      headerRow: headerIndex >= 0 ? rows[headerIndex] : null
     });
 
     transactions.push({
@@ -301,8 +361,8 @@ export function parseCsvStatement(
       date: normalizedDate,
       type,
       amount,
-      description: rawDesc,
-      memo: rawDesc,
+      description: descToUse,
+      memo: memoToUse,
       documentNumber: !isTrivialDoc ? rawDoc : undefined,
       isPix,
       isPixReturn,
