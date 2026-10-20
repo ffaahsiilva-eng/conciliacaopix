@@ -233,7 +233,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({ isOpen, onClose }) => 
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              Salva um arquivo de backup <strong>.json</strong> na pasta <code>ConciliaPix_Backups</code> do seu Google Drive e preenche automaticamente uma Planilha Google com 3 abas organizadas: <strong>Lançamentos</strong>, <strong>Acertos</strong> e <strong>Resumo por Motorista</strong>.
+              Mantém sempre <strong>1 único arquivo de backup atualizado</strong> (substituindo o anterior para não ocupar espaço) na pasta <code>ConciliaPix_Backups</code> do seu Google Drive e preenche automaticamente a Planilha Google com 3 abas organizadas: <strong>Lançamentos</strong>, <strong>Acertos</strong> e <strong>Resumo por Motorista</strong>.
             </p>
 
             {/* Status of last drive sync */}

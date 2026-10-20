@@ -31,39 +31,31 @@ function doPost(e) {
     var dateStamp = Utilities.formatDate(now, timeZone, "yyyy-MM-dd_HH-mm-ss");
 
     // ==========================================================================
-    // 1. SALVAR ARQUIVO DE BACKUP COMPLETO (.JSON) NO GOOGLE DRIVE
+    // 1. SALVAR ARQUIVO DE BACKUP NO GOOGLE DRIVE (SEMPRE SUBSTITUI O ANTERIOR)
     // ==========================================================================
     var folderName = "ConciliaPix_Backups";
     var folders = DriveApp.getFoldersByName(folderName);
     var folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
 
     var backupJson = JSON.stringify(payload.backupData || payload);
-    var fileName = "conciliapix-backup-" + dateStamp + ".json";
-    folder.createFile(fileName, backupJson, MimeType.PLAIN_TEXT);
+    var backupFileName = "conciliapix-backup.json";
 
-    // Atualiza também o arquivo com nome fixo LATEST (para restauração rápida de emergência)
-    var latestFiles = folder.getFilesByName("conciliapix-backup-LATEST.json");
-    if (latestFiles.hasNext()) {
-      latestFiles.next().setContent(backupJson);
+    // Busca se o arquivo de backup já existe na pasta para substituir o conteúdo
+    var existingFiles = folder.getFilesByName(backupFileName);
+    if (existingFiles.hasNext()) {
+      var file = existingFiles.next();
+      file.setContent(backupJson); // Substitui o arquivo anterior pelo novo
+      file.setDescription("Última sincronização: " + now.toISOString());
     } else {
-      folder.createFile("conciliapix-backup-LATEST.json", backupJson, MimeType.PLAIN_TEXT);
+      folder.createFile(backupFileName, backupJson, MimeType.PLAIN_TEXT);
     }
 
-    // Rotação: manter os 30 backups mais recentes para não ocupar espaço excessivo
+    // Move para a lixeira quaisquer backups antigos para manter SEMPRE apenas 1 arquivo no Drive
     var files = folder.getFiles();
-    var list = [];
     while (files.hasNext()) {
       var f = files.next();
-      if (f.getName().indexOf("conciliapix-backup-20") === 0) {
-        list.push(f);
-      }
-    }
-    if (list.length > 30) {
-      list.sort(function (a, b) {
-        return b.getDateCreated().getTime() - a.getDateCreated().getTime();
-      });
-      for (var i = 30; i < list.length; i++) {
-        list[i].setTrashed(true);
+      if (f.getName() !== backupFileName && f.getName().indexOf("conciliapix-backup") === 0) {
+        f.setTrashed(true);
       }
     }
 
@@ -124,8 +116,8 @@ function doPost(e) {
 
     return responseJson({
       success: true,
-      message: "Backup salvo no Google Drive (" + fileName + ") e " + rowsUpdated + " linhas atualizadas na Planilha!",
-      fileName: fileName,
+      message: "Backup atualizado com sucesso no Google Drive (" + backupFileName + ") e " + rowsUpdated + " linhas atualizadas na Planilha!",
+      fileName: backupFileName,
       folder: folderName,
       updatedAt: now.toISOString()
     });
