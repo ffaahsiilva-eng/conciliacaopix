@@ -8,7 +8,7 @@ import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import path from 'path';
 import fs from 'fs';
-import { getDatabase, persistDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery, startBackupScheduler, listLocalBackups, createLocalBackup, listSnapshotHistory, loadSnapshotFromHistory, applySnapshotToDatabase, validateSnapshotBuffer, getBootDiagnostics } from './server/db.js';
+import { getDatabase, persistDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery, startBackupScheduler, listLocalBackups, createLocalBackup, listSnapshotHistory, loadSnapshotFromHistory, applySnapshotToDatabase, validateSnapshotBuffer, getBootDiagnostics, cleanupDuplicateTransactions } from './server/db.js';
 import { getGoogleDriveSyncStatus, setGoogleDriveWebhookUrl, executeGoogleDriveSync, scheduleGoogleDriveAutoSync } from './server/googleDriveService.js';
 import { parseOfx, isBalanceLine } from './server/parsers/ofxParser.js';
 import { parseCsvStatement } from './server/parsers/csvParser.js';
@@ -818,6 +818,38 @@ app.get('/api/banks', async (req, res) => {
 // =============================================================
 // Helper functions for bulletproof transaction deduplication
 // =============================================================
+export function normalizeBankIdentifier(bankName?: string | null, bankCode?: string | null): string {
+  if (bankCode && String(bankCode).trim()) {
+    const c = String(bankCode).trim().replace(/\D/g, '');
+    if (c) return c.padStart(3, '0');
+  }
+  const n = (bankName || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (n.includes('brasil')) return '001';
+  if (n.includes('itau')) return '341';
+  if (n.includes('bradesco')) return '237';
+  if (n.includes('caixa')) return '104';
+  if (n.includes('santander')) return '033';
+  if (n.includes('inter')) return '077';
+  if (n.includes('nu') || n.includes('nubank')) return '260';
+  if (n.includes('sicoob')) return '756';
+  if (n.includes('c6')) return '336';
+  return n.replace(/[^a-z0-9]/g, '').slice(0, 20) || 'unknown';
+}
+
+export function normalizeTransactionDescription(desc?: string | null): string {
+  if (!desc) return '';
+  return desc
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // remove accents
+    .replace(/[^\w\s]/g, ' ') // replace punctuation/symbols with space
+    .replace(/\s+/g, ' ') // collapse multiple whitespaces
+    .trim()
+    .toLowerCase();
+}
+
 export function normalizeTransactionDoc(val: string | null | undefined): string {
   if (!val) return '';
   let s = String(val).trim();
@@ -838,6 +870,23 @@ export function extractPixE2eId(text: string | null | undefined): string | null 
   if (!text) return null;
   const match = text.match(/\bE\d{8}\d{4}[a-zA-Z0-9]{16,20}\b/i) || text.match(/\b[ED][a-zA-Z0-9]{31}\b/);
   return match ? match[0].toUpperCase() : null;
+}
+
+export function createExactTransactionKey(params: {
+  companyId: string;
+  bankIdentifier: string;
+  date: string;
+  amount: number;
+  type?: string;
+  description?: string | null;
+}): string {
+  const comp = String(params.companyId || 'matriz').trim().toLowerCase();
+  const bank = params.bankIdentifier;
+  const d = String(params.date || '').slice(0, 10);
+  const amt = Number(params.amount || 0).toFixed(2);
+  const type = (params.type || 'CREDIT').toUpperCase();
+  const desc = normalizeTransactionDescription(params.description);
+  return `${comp}|${bank}|${d}|${amt}|${type}|${desc}`;
 }
 
 export function createTransactionSignature(tx: {
@@ -893,6 +942,7 @@ app.post('/api/statements/upload', async (req, res) => {
     const nowIso = new Date().toISOString();
     const finalBankName = bankName || parsedResult.bankName || 'Extrato Bancário';
     const finalBankCode = bankCode || parsedResult.bankCode || '';
+    const incomingBankId = normalizeBankIdentifier(finalBankName, finalBankCode);
 
     let totalCredit = 0;
     let totalDebit = 0;
@@ -910,18 +960,20 @@ app.post('/api/statements/upload', async (req, res) => {
     const minDateStr = validDates[0] || '1970-01-01';
     const maxDateStr = validDates[validDates.length - 1] || '2099-12-31';
 
-    // Extend search window by 3 days on each side to catch any boundary time differences
+    // Extend search window by 7 days on each side to catch any boundary time differences
     const dMin = new Date(minDateStr + 'T12:00:00Z');
-    dMin.setDate(dMin.getDate() - 3);
+    dMin.setDate(dMin.getDate() - 7);
     const searchMin = dMin.toISOString().slice(0, 10);
 
     const dMax = new Date(maxDateStr + 'T12:00:00Z');
-    dMax.setDate(dMax.getDate() + 3);
+    dMax.setDate(dMax.getDate() + 7);
     const searchMax = dMax.toISOString().slice(0, 10);
 
     // Fetch existing transactions for this company within the date window
     const existingRows = await queryAll<{
       id: string;
+      bank_name: string;
+      bank_code: string | null;
       fitid: string | null;
       document_number: string | null;
       date: string;
@@ -933,34 +985,49 @@ app.post('/api/statements/upload', async (req, res) => {
       memo: string | null;
       raw_data: string | null;
     }>(
-      `SELECT id, fitid, document_number, date, amount, type, counterparty_name, counterparty_doc, description, memo, raw_data
+      `SELECT id, bank_name, bank_code, fitid, document_number, date, amount, type, counterparty_name, counterparty_doc, description, memo, raw_data
        FROM transactions
        WHERE company_id = ? AND date >= ? AND date <= ?`,
       [companyId, searchMin, searchMax]
     );
 
-    const existingDocSet = new Set<string>();
-    const existingE2eSet = new Set<string>();
-    const existingSignatureCounts = new Map<string, number>();
+    const existingDocMap = new Map<string, any[]>();
+    const existingE2eMap = new Map<string, any>();
+    const existingCanonicalPool = new Map<string, any[]>();
 
     for (const row of existingRows) {
+      const rowBankId = normalizeBankIdentifier(row.bank_name, row.bank_code);
       const normFitid = normalizeTransactionDoc(row.fitid);
       const normDoc = normalizeTransactionDoc(row.document_number);
-      if (normFitid) existingDocSet.add(normFitid);
-      if (normDoc) existingDocSet.add(normDoc);
+
+      if (normFitid) {
+        if (!existingDocMap.has(normFitid)) existingDocMap.set(normFitid, []);
+        existingDocMap.get(normFitid)!.push(row);
+      }
+      if (normDoc && normDoc !== normFitid) {
+        if (!existingDocMap.has(normDoc)) existingDocMap.set(normDoc, []);
+        existingDocMap.get(normDoc)!.push(row);
+      }
 
       const e2e = extractPixE2eId(`${row.description || ''} ${row.memo || ''} ${row.raw_data || ''}`);
-      if (e2e) existingE2eSet.add(e2e);
+      if (e2e) existingE2eMap.set(e2e, row);
 
-      const sig = createTransactionSignature({
+      const canKey = createExactTransactionKey({
+        companyId,
+        bankIdentifier: rowBankId,
         date: row.date,
         amount: row.amount,
         type: row.type,
-        counterpartyDoc: row.counterparty_doc,
-        counterpartyName: row.counterparty_name,
         description: row.description
       });
-      existingSignatureCounts.set(sig, (existingSignatureCounts.get(sig) || 0) + 1);
+
+      if (!existingCanonicalPool.has(canKey)) existingCanonicalPool.set(canKey, []);
+      existingCanonicalPool.get(canKey)!.push({
+        ...row,
+        normDoc,
+        normFitid,
+        bankId: rowBankId
+      });
     }
 
     // ── Wrap all inserts in a single SQLite transaction for 50x+ speedup on bulk imports ──
@@ -978,52 +1045,90 @@ app.post('/api/statements/upload', async (req, res) => {
           continue; // Skip non-credit non-pix-return transactions
         }
 
-        // ── DUPLICATE DETECTION (Never duplicate, never replace, skip duplicate) ──
+        // ── DUPLICATE DETECTION & REUSE (Zero duplicates, reuse existing) ──
         const normDoc = normalizeTransactionDoc(tx.documentNumber);
         const normFitid = normalizeTransactionDoc(tx.fitid);
         const txE2e = extractPixE2eId(`${tx.description || ''} ${tx.memo || ''} ${tx.rawData || ''}`);
-        const txSig = createTransactionSignature({
+        const txCanonicalKey = createExactTransactionKey({
+          companyId,
+          bankIdentifier: incomingBankId,
           date: tx.date,
           amount: tx.amount,
           type: tx.type,
-          counterpartyDoc: tx.counterpartyDoc,
-          counterpartyName: tx.counterpartyName,
           description: tx.description
         });
 
-        let isDuplicate = false;
+        let matchedExisting: any = null;
 
-        // Tier 1: Check document number or FITID
-        if (normDoc && existingDocSet.has(normDoc)) {
-          isDuplicate = true;
-        } else if (normFitid && existingDocSet.has(normFitid)) {
-          isDuplicate = true;
+        // Tier 1: Check Pix End-to-End ID
+        if (txE2e && existingE2eMap.has(txE2e)) {
+          matchedExisting = existingE2eMap.get(txE2e);
         }
 
-        // Tier 2: Check Pix End-to-End ID
-        if (!isDuplicate && txE2e && existingE2eSet.has(txE2e)) {
-          isDuplicate = true;
+        // Tier 2: Check document number or FITID (if present and matches the same bank or company)
+        if (!matchedExisting && normDoc && existingDocMap.has(normDoc)) {
+          const candidates = existingDocMap.get(normDoc)!;
+          const match = candidates.find(c => normalizeBankIdentifier(c.bank_name, c.bank_code) === incomingBankId && Math.abs(c.amount - tx.amount) < 0.01) || candidates[0];
+          if (match) matchedExisting = match;
         }
 
-        // Tier 3: Content signature (amount, date, type, counterparty / description)
-        if (!isDuplicate) {
-          const available = existingSignatureCounts.get(txSig) || 0;
-          if (available > 0) {
-            isDuplicate = true;
-            existingSignatureCounts.set(txSig, available - 1);
+        if (!matchedExisting && normFitid && existingDocMap.has(normFitid)) {
+          const candidates = existingDocMap.get(normFitid)!;
+          const match = candidates.find(c => normalizeBankIdentifier(c.bank_name, c.bank_code) === incomingBankId && Math.abs(c.amount - tx.amount) < 0.01) || candidates[0];
+          if (match) matchedExisting = match;
+        }
+
+        // Tier 3: Check Exact Canonical Key (conta bancária, data, valor, tipo e descrição)
+        if (!matchedExisting && existingCanonicalPool.has(txCanonicalKey)) {
+          const pool = existingCanonicalPool.get(txCanonicalKey)!;
+          if (pool.length > 0) {
+            // Find a candidate in the pool whose document does not conflict with this one
+            const idx = pool.findIndex(cand => {
+              // If either has no doc, it's a match
+              if (!cand.normDoc && !cand.normFitid) return true;
+              if (!normDoc && !normFitid) return true;
+              // If docs match, it's a match
+              if (normDoc && (normDoc === cand.normDoc || normDoc === cand.normFitid)) return true;
+              if (normFitid && (normFitid === cand.normFitid || normFitid === cand.normDoc)) return true;
+              // Both have distinct valid document numbers -> distinct transaction
+              return false;
+            });
+
+            if (idx !== -1) {
+              matchedExisting = pool.splice(idx, 1)[0];
+            }
           }
         }
 
-        if (isDuplicate) {
+        // If duplicate found: REUSE existing record, enrich if needed, DO NOT insert new row
+        if (matchedExisting) {
           skippedDuplicateCount++;
-          continue; // SKIP duplicate
+
+          // Enrich existing record with any missing fields from this statement
+          db.run(
+            `UPDATE transactions
+             SET document_number = COALESCE(document_number, ?),
+                 fitid = COALESCE(fitid, ?),
+                 counterparty_name = COALESCE(counterparty_name, ?),
+                 counterparty_doc = COALESCE(counterparty_doc, ?),
+                 memo = COALESCE(NULLIF(memo, ''), ?),
+                 raw_data = COALESCE(raw_data, ?)
+             WHERE id = ?`,
+            [
+              tx.documentNumber || null,
+              tx.fitid || null,
+              tx.counterpartyName || null,
+              tx.counterpartyDoc || null,
+              tx.memo || null,
+              tx.rawData || null,
+              matchedExisting.id
+            ]
+          );
+
+          continue; // REUSED! No new row created.
         }
 
-        // Valid new transaction: register immediately so intra-batch duplicates are also skipped
-        if (normDoc) existingDocSet.add(normDoc);
-        if (normFitid) existingDocSet.add(normFitid);
-        if (txE2e) existingE2eSet.add(txE2e);
-
+        // Valid new transaction: insert
         if (tx.type === 'CREDIT') totalCredit += tx.amount;
         if (tx.type === 'DEBIT') totalDebit += tx.amount;
 
@@ -1068,6 +1173,39 @@ app.post('/api/statements/upload', async (req, res) => {
           ]
         );
         importedCount++;
+
+        // Register immediately so intra-batch duplicates are also detected and reused
+        const newRecord = {
+          id: txId,
+          bank_name: finalBankName,
+          bank_code: finalBankCode,
+          fitid: tx.fitid,
+          document_number: tx.documentNumber,
+          date: tx.date,
+          amount: tx.amount,
+          type: tx.type,
+          counterparty_name: tx.counterpartyName,
+          counterparty_doc: tx.counterpartyDoc,
+          description: tx.description,
+          memo: tx.memo,
+          raw_data: tx.rawData,
+          normDoc,
+          normFitid,
+          bankId: incomingBankId
+        };
+
+        if (normDoc) {
+          if (!existingDocMap.has(normDoc)) existingDocMap.set(normDoc, []);
+          existingDocMap.get(normDoc)!.push(newRecord);
+        }
+        if (normFitid && normFitid !== normDoc) {
+          if (!existingDocMap.has(normFitid)) existingDocMap.set(normFitid, []);
+          existingDocMap.get(normFitid)!.push(newRecord);
+        }
+        if (txE2e) existingE2eMap.set(txE2e, newRecord);
+
+        if (!existingCanonicalPool.has(txCanonicalKey)) existingCanonicalPool.set(txCanonicalKey, []);
+        existingCanonicalPool.get(txCanonicalKey)!.push(newRecord);
       }
 
       // Save batch record inside the same transaction ONLY IF at least one transaction was imported
@@ -1102,7 +1240,7 @@ app.post('/api/statements/upload', async (req, res) => {
       throw txErr;
     }
 
-    if (importedCount > 0) {
+    if (importedCount > 0 || skippedDuplicateCount > 0) {
       await persistDatabase();
       scheduleGoogleDriveAutoSync('statement-upload');
     }
@@ -3141,6 +3279,27 @@ app.post('/api/database/capitalize', async (req, res) => {
     }
     await persistDatabase();
     res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Safely deduplicate transactions, preserving exactly 1 occurrence per transaction
+app.post('/api/database/cleanup-duplicates', async (req, res) => {
+  try {
+    const db = await getDatabase();
+    const result = cleanupDuplicateTransactions(db);
+    if (result.removedCount > 0) {
+      await persistDatabase();
+      scheduleGoogleDriveAutoSync('dedup-cleanup');
+    }
+    res.json({
+      success: true,
+      removedCount: result.removedCount,
+      preservedCount: result.preservedCount,
+      groupsCount: result.groupsCount,
+      removedIds: result.removedIds
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -1,4 +1,4 @@
-﻿node_modules/
+node_modules/
 build/
 dist/
 coverage/
@@ -26,3 +26,5 @@ data/*.sqlite-shm
 data/*.tmp
 data/*.prev
 data/backups/
+data/_backups/
+scratch/

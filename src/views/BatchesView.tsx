@@ -270,8 +270,14 @@ export const BatchesView: React.FC<BatchesViewProps> = ({ onOpenUpload }) => {
                     <span>{b.format}</span>
                   </span>
 
-                  <span className="text-[11px] text-slate-500 font-medium truncate">
-                    {b.bank_name}
+                  <span className="text-[11px] text-slate-500 font-medium truncate flex items-center gap-1">
+                    {(b.bank_code === '001' || b.bank_name?.toLowerCase().includes('brasil')) && (
+                      <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-3.5 w-3.5 object-contain shrink-0" />
+                    )}
+                    {(b.bank_code === '237' || b.bank_name?.toLowerCase().includes('bradesco')) && (
+                      <img src="/Bradesco.png" alt="Banco Bradesco" className="h-3.5 w-3.5 object-contain shrink-0" />
+                    )}
+                    <span>{b.bank_name}</span>
                   </span>
                 </div>
 
@@ -362,7 +368,15 @@ export const BatchesView: React.FC<BatchesViewProps> = ({ onOpenUpload }) => {
                       <span className="font-mono">{b.filename}</span>
                     </td>
                     <td className="py-3.5 px-4 text-slate-800 whitespace-nowrap font-medium">
-                      {b.bank_name}
+                      <div className="flex items-center gap-1.5">
+                        {(b.bank_code === '001' || b.bank_name?.toLowerCase().includes('brasil')) && (
+                          <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-4 w-4 object-contain shrink-0" />
+                        )}
+                        {(b.bank_code === '237' || b.bank_name?.toLowerCase().includes('bradesco')) && (
+                          <img src="/Bradesco.png" alt="Banco Bradesco" className="h-4 w-4 object-contain shrink-0" />
+                        )}
+                        <span>{b.bank_name}</span>
+                      </div>
                     </td>
                     <td className="py-3.5 px-4 text-center">
                       <span className="bg-blue-50 text-blue-700 font-mono text-[10px] font-bold px-2 py-0.5 rounded border border-blue-200">

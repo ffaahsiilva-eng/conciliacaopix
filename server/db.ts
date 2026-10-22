@@ -1817,12 +1817,201 @@ function initSchema(db: Database): void {
     // Índices em Sessões de Conciliação
     db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_company ON reconciliation_sessions(company_id)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_driver ON reconciliation_sessions(driver_id)`);
+
+    // Índice especializado para prevenção instantânea de duplicidades na importação
+    db.run(`CREATE INDEX IF NOT EXISTS idx_trans_dedup ON transactions(company_id, date, amount, type)`);
   } catch(e) {
     console.error("[DB Optimization] Falha ao criar índices:", e);
   }
 
+  // Auto-cleanup seguro de transações duplicadas preservando 1 ocorrência e integridade referencial
+  try {
+    const dedupResult = cleanupDuplicateTransactions(db);
+    if (dedupResult.removedCount > 0) {
+      console.log(`[DB] Limpeza antiduplicidade: ${dedupResult.removedCount} registros duplicados removidos com segurança em ${dedupResult.groupsCount} grupos.`);
+    }
+  } catch (dedupErr) {
+    console.error("[DB Deduplication Warning]", dedupErr);
+  }
+
   // NOTE: NO FICTIONAL TRANSACTIONS, NO FICTIONAL DRIVERS, NO FICTIONAL BATCHES OR SESSIONS.
   // The database starts 100% clean and pristine, ready for real user bank statements and real driver entries.
+}
+
+// ============================================================================
+// LIMPEZA SEGURA DE DUPLICATAS DE EXTRATOS BANCÁRIOS
+// ============================================================================
+export function cleanupDuplicateTransactions(db: Database): {
+  removedCount: number;
+  preservedCount: number;
+  groupsCount: number;
+  removedIds: string[];
+} {
+  const normDesc = (s?: string | null) => {
+    if (!s) return '';
+    return s
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\w\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  };
+
+  const normBank = (name?: string | null, code?: string | null) => {
+    if (code && String(code).trim()) {
+      const c = String(code).trim().replace(/\D/g, '');
+      if (c) return c.padStart(3, '0');
+    }
+    const n = (name || '').toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    if (n.includes('brasil')) return '001';
+    if (n.includes('itau')) return '341';
+    if (n.includes('bradesco')) return '237';
+    if (n.includes('caixa')) return '104';
+    if (n.includes('santander')) return '033';
+    if (n.includes('inter')) return '077';
+    if (n.includes('nu') || n.includes('nubank')) return '260';
+    if (n.includes('sicoob')) return '756';
+    if (n.includes('c6')) return '336';
+    return n.replace(/[^a-z0-9]/g, '').slice(0, 20) || 'unknown';
+  };
+
+  const normDoc = (val?: string | null) => {
+    if (!val) return '';
+    let s = String(val).trim();
+    s = s.replace(/^(?:BB|ITAU|BRAD|CX|CEF|SANT|INTER|NU|OFX|CSV|FIT)[-_:\s]+/i, '');
+    s = s.replace(/[^a-zA-Z0-9]/g, '');
+    if (/^\d+$/.test(s)) {
+      s = s.replace(/^0+/, '');
+    }
+    if (!s || s === '0' || s.toLowerCase() === 'pix') return '';
+    return s.toUpperCase();
+  };
+
+  const txs = db.exec(`
+    SELECT id, company_id, bank_name, bank_code, date, type, amount, description, memo,
+           status, session_id, linked_tx_id, fitid, document_number, counterparty_name,
+           counterparty_doc, raw_data, created_at, import_batch_id
+    FROM transactions
+  `);
+
+  if (!txs || txs.length === 0 || !txs[0].values) {
+    return { removedCount: 0, preservedCount: 0, groupsCount: 0, removedIds: [] };
+  }
+
+  const cols = txs[0].columns;
+  const rows = txs[0].values;
+
+  const canonicalGroups = new Map<string, any[]>();
+  for (const r of rows) {
+    const obj: any = {};
+    cols.forEach((c: string, i: number) => (obj[c] = r[i]));
+    obj.normDoc = normDoc(obj.document_number);
+    obj.normFitid = normDoc(obj.fitid);
+
+    const key = `${obj.company_id}|${normBank(obj.bank_name, obj.bank_code)}|${obj.date}|${Number(obj.amount).toFixed(2)}|${obj.type}|${normDesc(obj.description)}`;
+    if (!canonicalGroups.has(key)) canonicalGroups.set(key, []);
+    canonicalGroups.get(key)!.push(obj);
+  }
+
+  const toDeleteList: any[] = [];
+  let groupsCount = 0;
+
+  for (const [, items] of canonicalGroups.entries()) {
+    if (items.length <= 1) continue;
+
+    const docSubgroups = new Map<string, any[]>();
+    for (const item of items) {
+      const docKey = item.normDoc || item.normFitid || '__NO_DOC__';
+      if (!docSubgroups.has(docKey)) docSubgroups.set(docKey, []);
+      docSubgroups.get(docKey)!.push(item);
+    }
+
+    for (const [, subItems] of docSubgroups.entries()) {
+      if (subItems.length > 1) {
+        groupsCount++;
+        subItems.sort((a, b) => {
+          const aRec = a.status === 'RECONCILED' || a.session_id ? 1 : 0;
+          const bRec = b.status === 'RECONCILED' || b.session_id ? 1 : 0;
+          if (aRec !== bRec) return bRec - aRec;
+
+          const aLink = a.linked_tx_id ? 1 : 0;
+          const bLink = b.linked_tx_id ? 1 : 0;
+          if (aLink !== bLink) return bLink - aLink;
+
+          const aScore = (a.counterparty_name ? 1 : 0) + (a.counterparty_doc ? 1 : 0) + (a.memo ? 1 : 0);
+          const bScore = (b.counterparty_name ? 1 : 0) + (b.counterparty_doc ? 1 : 0) + (b.memo ? 1 : 0);
+          if (aScore !== bScore) return bScore - aScore;
+
+          return String(a.created_at).localeCompare(String(b.created_at));
+        });
+
+        const primary = subItems[0];
+        const duplicates = subItems.slice(1);
+
+        for (const dup of duplicates) {
+          toDeleteList.push({ primary, dup });
+        }
+      }
+    }
+  }
+
+  if (toDeleteList.length === 0) {
+    return { removedCount: 0, preservedCount: rows.length, groupsCount: 0, removedIds: [] };
+  }
+
+  db.run('BEGIN TRANSACTION');
+  try {
+    for (const { primary, dup } of toDeleteList) {
+      db.run(
+        `UPDATE transactions
+         SET counterparty_name = COALESCE(counterparty_name, ?),
+             counterparty_doc = COALESCE(counterparty_doc, ?),
+             memo = COALESCE(NULLIF(memo, ''), ?),
+             fitid = COALESCE(fitid, ?),
+             document_number = COALESCE(document_number, ?),
+             raw_data = COALESCE(raw_data, ?)
+         WHERE id = ?`,
+        [
+          dup.counterparty_name || null,
+          dup.counterparty_doc || null,
+          dup.memo || null,
+          dup.fitid || null,
+          dup.document_number || null,
+          dup.raw_data || null,
+          primary.id
+        ]
+      );
+
+      db.run(`UPDATE audit_logs SET entity_id = ? WHERE entity_id = ?`, [primary.id, dup.id]);
+      db.run(`UPDATE transactions SET linked_tx_id = ? WHERE linked_tx_id = ?`, [primary.id, dup.id]);
+      db.run(`DELETE FROM transactions WHERE id = ?`, [dup.id]);
+
+      if (dup.import_batch_id) {
+        db.run(
+          `UPDATE import_batches
+           SET total_transactions = MAX(0, total_transactions - 1),
+               total_credit = CASE WHEN ? = 'CREDIT' THEN MAX(0, total_credit - ?) ELSE total_credit END,
+               total_debit = CASE WHEN ? = 'DEBIT' THEN MAX(0, total_debit - ?) ELSE total_debit END
+           WHERE id = ?`,
+          [dup.type, dup.amount, dup.type, dup.amount, dup.import_batch_id]
+        );
+      }
+    }
+    db.run('COMMIT');
+  } catch (err) {
+    db.run('ROLLBACK');
+    throw err;
+  }
+
+  return {
+    removedCount: toDeleteList.length,
+    preservedCount: rows.length - toDeleteList.length,
+    groupsCount,
+    removedIds: toDeleteList.map((t) => t.dup.id)
+  };
 }
 
 // ============================================================================

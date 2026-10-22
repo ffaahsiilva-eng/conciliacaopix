@@ -515,10 +515,16 @@ NEWFILESPEC:NONE
                     key={b.id}
                     className="bg-slate-50 border border-slate-200 p-2.5 rounded-xl flex items-center space-x-2"
                   >
-                    <span
-                      className="w-2.5 h-2.5 rounded-full shrink-0"
-                      style={{ backgroundColor: b.color || '#2563eb' }}
-                    />
+                    {(b.bank_code === '001' || b.bank_name?.toLowerCase().includes('brasil')) ? (
+                      <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-5 w-5 object-contain shrink-0" />
+                    ) : (b.bank_code === '237' || b.bank_name?.toLowerCase().includes('bradesco')) ? (
+                      <img src="/Bradesco.png" alt="Banco Bradesco" className="h-5 w-5 object-contain shrink-0" />
+                    ) : (
+                      <span
+                        className="w-2.5 h-2.5 rounded-full shrink-0"
+                        style={{ backgroundColor: b.color || '#2563eb' }}
+                      />
+                    )}
                     <div className="truncate">
                       <p className="font-bold text-slate-900 truncate">{b.bank_name}</p>
                       <p className="text-[10px] text-slate-500">Cód: {b.bank_code}</p>

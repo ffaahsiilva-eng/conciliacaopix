@@ -191,8 +191,15 @@ export const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = (
               <span className="font-mono text-base font-extrabold text-slate-900">
                 {formatDate(transaction.date)}
               </span>
-              <span className="text-[11px] text-slate-500 block mt-0.5">
-                Banco: <strong>{transaction.bank_name}</strong>
+              <span className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-0.5">
+                <span>Banco:</span>
+                {(transaction.bank_code === '001' || transaction.bank_name?.toLowerCase().includes('brasil')) && (
+                  <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-4 w-4 object-contain shrink-0" />
+                )}
+                {(transaction.bank_code === '237' || transaction.bank_name?.toLowerCase().includes('bradesco')) && (
+                  <img src="/Bradesco.png" alt="Banco Bradesco" className="h-4 w-4 object-contain shrink-0" />
+                )}
+                <strong>{transaction.bank_name}</strong>
               </span>
             </div>
           </div>

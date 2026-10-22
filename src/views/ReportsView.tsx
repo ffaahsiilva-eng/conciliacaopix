@@ -702,7 +702,13 @@ export const ReportsView: React.FC = () => {
                     return (
                       <tr key={idx} className="hover:bg-slate-50 transition-colors">
                         <td className="py-3.5 px-2 font-bold text-slate-900 flex items-center gap-2">
-                          <Building2 className="w-4 h-4 text-blue-600" />
+                          {b.bank_name?.toLowerCase().includes('brasil') ? (
+                            <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-5 w-5 object-contain shrink-0" />
+                          ) : b.bank_name?.toLowerCase().includes('bradesco') ? (
+                            <img src="/Bradesco.png" alt="Banco Bradesco" className="h-5 w-5 object-contain shrink-0" />
+                          ) : (
+                            <Building2 className="w-4 h-4 text-blue-600" />
+                          )}
                           <span>{b.bank_name}</span>
                         </td>
                         <td className="py-3.5 px-2 text-center font-mono">{b.total_transactions}</td>

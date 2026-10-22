@@ -1210,6 +1210,9 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                           {(tx.bank_code === '001' || tx.bank_name?.toLowerCase().includes('brasil')) && (
                             <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-5 w-5 object-contain shrink-0" />
                           )}
+                          {(tx.bank_code === '237' || tx.bank_name?.toLowerCase().includes('bradesco')) && (
+                            <img src="/Bradesco.png" alt="Banco Bradesco" className="h-5 w-5 object-contain shrink-0" />
+                          )}
                           <div>
                             <span className="font-bold text-slate-900">{tx.bank_name}</span>
                             {tx.bank_code && (

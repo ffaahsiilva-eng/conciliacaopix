@@ -169,7 +169,15 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
               </div>
               <div>
                 <span className="text-slate-400 text-[10px] block">Banco:</span>
-                <span className="font-semibold">{transaction.bank_name}</span>
+                <span className="font-semibold flex items-center gap-1.5">
+                  {(transaction.bank_code === '001' || transaction.bank_name?.toLowerCase().includes('brasil')) && (
+                    <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-4 w-4 object-contain shrink-0" />
+                  )}
+                  {(transaction.bank_code === '237' || transaction.bank_name?.toLowerCase().includes('bradesco')) && (
+                    <img src="/Bradesco.png" alt="Banco Bradesco" className="h-4 w-4 object-contain shrink-0" />
+                  )}
+                  <span>{transaction.bank_name}</span>
+                </span>
               </div>
               {transaction.fitid && (
                 <div className="col-span-2">
