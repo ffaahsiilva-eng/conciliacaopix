@@ -430,16 +430,27 @@ NEWFILESPEC:NONE
                 <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-4 text-xs text-emerald-900 space-y-1">
                   <div className="flex items-center space-x-2 font-bold text-emerald-800 text-sm">
                     <CheckCircle className="w-5 h-5 text-emerald-600" />
-                    <span>Importação Concluída com Sucesso!</span>
+                    <span>
+                      {successResult.importedCount === 0 && successResult.skippedDuplicateCount > 0
+                        ? 'Extrato Já Importado Anteriormente'
+                        : 'Importação Concluída com Sucesso!'}
+                    </span>
                   </div>
-                  <p className="text-emerald-800">
-                    • <strong>{successResult.importedCount} novas transações</strong> inseridas no banco de dados.
-                  </p>
-                  {successResult.skippedDuplicateCount > 0 && (
-                    <p className="text-amber-800">
-                      • <strong>{successResult.skippedDuplicateCount} transações duplicadas</strong> foram
-                      detectadas e ignoradas com segurança.
+                  {successResult.importedCount === 0 && successResult.skippedDuplicateCount > 0 ? (
+                    <p className="text-emerald-900 font-medium">
+                      Todas as <strong>{successResult.skippedDuplicateCount} transações</strong> deste arquivo já haviam sido importadas anteriormente e foram <strong>ignoradas com segurança (nenhuma duplicidade gerada)</strong>.
                     </p>
+                  ) : (
+                    <>
+                      <p className="text-emerald-800">
+                        • <strong>{successResult.importedCount} novas transações</strong> inseridas no banco de dados.
+                      </p>
+                      {successResult.skippedDuplicateCount > 0 && (
+                        <p className="text-amber-800">
+                          • <strong>{successResult.skippedDuplicateCount} transações repetidas</strong> foram detectadas e ignoradas com segurança.
+                        </p>
+                      )}
+                    </>
                   )}
                   <p className="text-emerald-700">Banco: {successResult.bankName}</p>
                 </div>

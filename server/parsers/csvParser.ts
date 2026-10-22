@@ -247,6 +247,7 @@ export function parseCsvStatement(
 
   const transactions: ParsedTransaction[] = [];
   const startRow = headerIndex + 1;
+  const occurrenceMap = new Map<string, number>();
 
   for (let i = startRow; i < rows.length; i++) {
     const row = rows[i];
@@ -321,10 +322,6 @@ export function parseCsvStatement(
       rawDoc === '-' ||
       rawDoc.toLowerCase() === 'pix';
 
-    const fitid = !isTrivialDoc
-      ? (isBb13ColLayout ? `BB-${rawDoc}` : rawDoc)
-      : `CSV-${i}-${normalizedDate}-${amount.toFixed(2)}`;
-
     let counterpartyName: string | undefined = undefined;
     let counterpartyDoc: string | undefined = undefined;
     let descToUse = rawDesc;
@@ -346,6 +343,14 @@ export function parseCsvStatement(
       counterpartyName = extracted.counterpartyName;
       counterpartyDoc = extracted.counterpartyDoc;
     }
+
+    const lineSignature = `${normalizedDate}|${amount.toFixed(2)}|${type}|${cleanHeaderCell(descToUse)}`;
+    const occ = (occurrenceMap.get(lineSignature) || 0) + 1;
+    occurrenceMap.set(lineSignature, occ);
+
+    const fitid = !isTrivialDoc
+      ? rawDoc
+      : `CSV-${normalizedDate}-${amount.toFixed(2)}-${occ}`;
 
     const isPix = checkIfPix(descToUse, memoToUse);
     const isPixReturn = checkIfPixReturn(descToUse, memoToUse);

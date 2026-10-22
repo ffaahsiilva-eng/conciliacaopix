@@ -815,6 +815,53 @@ app.get('/api/banks', async (req, res) => {
   }
 });
 
+// =============================================================
+// Helper functions for bulletproof transaction deduplication
+// =============================================================
+export function normalizeTransactionDoc(val: string | null | undefined): string {
+  if (!val) return '';
+  let s = String(val).trim();
+  // Strip common bank prefixes: BB-, ITAU-, BRAD-, CEF-, CX-, SANT-, INTER-, NU-, OFX-, CSV-, FIT-
+  s = s.replace(/^(?:BB|ITAU|BRAD|CX|CEF|SANT|INTER|NU|OFX|CSV|FIT)[-_:\s]+/i, '');
+  // Strip non-alphanumeric
+  s = s.replace(/[^a-zA-Z0-9]/g, '');
+  // If numeric, strip leading zeros so "00020957353989152" and "20957353989152" match exactly
+  if (/^\d+$/.test(s)) {
+    s = s.replace(/^0+/, '');
+  }
+  // Check if trivial
+  if (!s || s === '0' || s.toLowerCase() === 'pix') return '';
+  return s.toUpperCase();
+}
+
+export function extractPixE2eId(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const match = text.match(/\bE\d{8}\d{4}[a-zA-Z0-9]{16,20}\b/i) || text.match(/\b[ED][a-zA-Z0-9]{31}\b/);
+  return match ? match[0].toUpperCase() : null;
+}
+
+export function createTransactionSignature(tx: {
+  date: string;
+  amount: number;
+  type?: string;
+  counterpartyDoc?: string | null;
+  counterpartyName?: string | null;
+  description?: string | null;
+}): string {
+  const d = tx.date || '';
+  const amt = Number(tx.amount || 0).toFixed(2);
+  const type = (tx.type || 'CREDIT').toUpperCase();
+  const doc = (tx.counterpartyDoc || '').replace(/\D/g, '');
+  const cleanName = (tx.counterpartyName || tx.description || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .toLowerCase()
+    .slice(0, 30);
+  
+  return `${d}|${amt}|${type}|${doc}|${cleanName}`;
+}
+
 // -------------------------------------------------------------
 // Statement Upload & Processing (OFX / CSV / Multi-banco)
 // -------------------------------------------------------------
@@ -854,125 +901,211 @@ app.post('/api/statements/upload', async (req, res) => {
 
     const db = await getDatabase();
 
-    // ── Performance: Bulk-fetch all existing fitids for this bank/company in ONE query ──
-    // Avoids N individual queryOne() calls (one per transaction) which are catastrophically slow for large files.
-    const candidateFitids = parsedResult.transactions
-      .filter(tx => tx.fitid)
-      .map(tx => tx.fitid as string);
+    // ── Multi-Tier Bulletproof Duplicate Prevention ──
+    const validDates = parsedResult.transactions
+      .map(t => t.date)
+      .filter(d => Boolean(d) && /^\d{4}-\d{2}-\d{2}$/.test(d))
+      .sort();
 
-    const existingFitidSet = new Set<string>();
-    if (candidateFitids.length > 0) {
-      const fpHolders = candidateFitids.map(() => '?').join(',');
-      const existingRows = await queryAll<{ fitid: string }>(
-        `SELECT DISTINCT fitid FROM transactions WHERE company_id = ? AND bank_name = ? AND fitid IN (${fpHolders})`,
-        [companyId, finalBankName, ...candidateFitids]
-      );
-      for (const row of existingRows) {
-        if (row.fitid) existingFitidSet.add(row.fitid);
-      }
+    const minDateStr = validDates[0] || '1970-01-01';
+    const maxDateStr = validDates[validDates.length - 1] || '2099-12-31';
+
+    // Extend search window by 3 days on each side to catch any boundary time differences
+    const dMin = new Date(minDateStr + 'T12:00:00Z');
+    dMin.setDate(dMin.getDate() - 3);
+    const searchMin = dMin.toISOString().slice(0, 10);
+
+    const dMax = new Date(maxDateStr + 'T12:00:00Z');
+    dMax.setDate(dMax.getDate() + 3);
+    const searchMax = dMax.toISOString().slice(0, 10);
+
+    // Fetch existing transactions for this company within the date window
+    const existingRows = await queryAll<{
+      id: string;
+      fitid: string | null;
+      document_number: string | null;
+      date: string;
+      amount: number;
+      type: string;
+      counterparty_name: string | null;
+      counterparty_doc: string | null;
+      description: string | null;
+      memo: string | null;
+      raw_data: string | null;
+    }>(
+      `SELECT id, fitid, document_number, date, amount, type, counterparty_name, counterparty_doc, description, memo, raw_data
+       FROM transactions
+       WHERE company_id = ? AND date >= ? AND date <= ?`,
+      [companyId, searchMin, searchMax]
+    );
+
+    const existingDocSet = new Set<string>();
+    const existingE2eSet = new Set<string>();
+    const existingSignatureCounts = new Map<string, number>();
+
+    for (const row of existingRows) {
+      const normFitid = normalizeTransactionDoc(row.fitid);
+      const normDoc = normalizeTransactionDoc(row.document_number);
+      if (normFitid) existingDocSet.add(normFitid);
+      if (normDoc) existingDocSet.add(normDoc);
+
+      const e2e = extractPixE2eId(`${row.description || ''} ${row.memo || ''} ${row.raw_data || ''}`);
+      if (e2e) existingE2eSet.add(e2e);
+
+      const sig = createTransactionSignature({
+        date: row.date,
+        amount: row.amount,
+        type: row.type,
+        counterpartyDoc: row.counterparty_doc,
+        counterpartyName: row.counterparty_name,
+        description: row.description
+      });
+      existingSignatureCounts.set(sig, (existingSignatureCounts.get(sig) || 0) + 1);
     }
 
     // ── Wrap all inserts in a single SQLite transaction for 50x+ speedup on bulk imports ──
     db.run('BEGIN TRANSACTION');
     try {
-    for (const tx of parsedResult.transactions) {
-      // RULE 0: Never import daily/monthly balance lines (Saldo do dia, Saldo anterior, etc.)
-      if (isBalanceLine(tx.description, tx.memo, tx.counterpartyName || '')) {
-        continue;
+      for (const tx of parsedResult.transactions) {
+        // RULE 0: Never import daily/monthly balance lines (Saldo do dia, Saldo anterior, etc.)
+        if (isBalanceLine(tx.description, tx.memo, tx.counterpartyName || '')) {
+          continue;
+        }
+
+        // RULE 1: Only import credit transactions OR Pix returns (which can be debit)
+        const isPixReturn = tx.isPixReturn;
+        if (tx.type !== 'CREDIT' && !isPixReturn) {
+          continue; // Skip non-credit non-pix-return transactions
+        }
+
+        // ── DUPLICATE DETECTION (Never duplicate, never replace, skip duplicate) ──
+        const normDoc = normalizeTransactionDoc(tx.documentNumber);
+        const normFitid = normalizeTransactionDoc(tx.fitid);
+        const txE2e = extractPixE2eId(`${tx.description || ''} ${tx.memo || ''} ${tx.rawData || ''}`);
+        const txSig = createTransactionSignature({
+          date: tx.date,
+          amount: tx.amount,
+          type: tx.type,
+          counterpartyDoc: tx.counterpartyDoc,
+          counterpartyName: tx.counterpartyName,
+          description: tx.description
+        });
+
+        let isDuplicate = false;
+
+        // Tier 1: Check document number or FITID
+        if (normDoc && existingDocSet.has(normDoc)) {
+          isDuplicate = true;
+        } else if (normFitid && existingDocSet.has(normFitid)) {
+          isDuplicate = true;
+        }
+
+        // Tier 2: Check Pix End-to-End ID
+        if (!isDuplicate && txE2e && existingE2eSet.has(txE2e)) {
+          isDuplicate = true;
+        }
+
+        // Tier 3: Content signature (amount, date, type, counterparty / description)
+        if (!isDuplicate) {
+          const available = existingSignatureCounts.get(txSig) || 0;
+          if (available > 0) {
+            isDuplicate = true;
+            existingSignatureCounts.set(txSig, available - 1);
+          }
+        }
+
+        if (isDuplicate) {
+          skippedDuplicateCount++;
+          continue; // SKIP duplicate
+        }
+
+        // Valid new transaction: register immediately so intra-batch duplicates are also skipped
+        if (normDoc) existingDocSet.add(normDoc);
+        if (normFitid) existingDocSet.add(normFitid);
+        if (txE2e) existingE2eSet.add(txE2e);
+
+        if (tx.type === 'CREDIT') totalCredit += tx.amount;
+        if (tx.type === 'DEBIT') totalDebit += tx.amount;
+
+        const isPix = tx.isPix;
+        const initialStatus = isPixReturn ? 'RETURNED' : 'PENDING';
+        const returnReason = isPixReturn ? 'Detectado automaticamente no extrato como devolução/estorno de Pix' : null;
+        const txId = `tx-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+
+        const status = ['PENDING', 'RECONCILED', 'IGNORED', 'RETURNED'].includes(initialStatus) 
+          ? initialStatus 
+          : 'PENDING';
+
+        db.run(
+          `INSERT INTO transactions (
+            id, company_id, import_batch_id, bank_name, bank_code, fitid, date, type, amount, original_amount, returned_amount,
+            description, memo, document_number, is_pix, is_pix_return, return_reason, status,
+            counterparty_name, counterparty_doc, raw_data, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            txId,
+            companyId,
+            batchId,
+            finalBankName,
+            finalBankCode,
+            tx.fitid,
+            tx.date,
+            tx.type,
+            tx.amount,
+            tx.amount, // original_amount
+            0, // returned_amount
+            tx.description,
+            tx.memo,
+            tx.documentNumber || null,
+            isPix ? 1 : 0,
+            isPixReturn ? 1 : 0,
+            returnReason,
+            status,
+            tx.counterpartyName || null,
+            tx.counterpartyDoc || null,
+            tx.rawData || null,
+            nowIso
+          ]
+        );
+        importedCount++;
       }
 
-      // RULE 1: Only import credit transactions OR Pix returns (which can be debit)
-      const isPixReturn = tx.isPixReturn;
-      if (tx.type !== 'CREDIT' && !isPixReturn) {
-        continue; // Skip non-credit non-pix-return transactions
+      // Save batch record inside the same transaction ONLY IF at least one transaction was imported
+      if (importedCount > 0) {
+        db.run(
+          `INSERT INTO import_batches (
+            id, company_id, filename, bank_name, bank_code, format, total_transactions, total_credit, total_debit,
+            period_start, period_end, imported_by_user_id, imported_by_user_name, imported_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            batchId,
+            companyId,
+            filename,
+            finalBankName,
+            finalBankCode,
+            isOfx ? 'OFX' : 'CSV',
+            importedCount,
+            totalCredit,
+            totalDebit,
+            parsedResult.periodStart || null,
+            parsedResult.periodEnd || null,
+            actorUser.id,
+            actorUser.name,
+            nowIso
+          ]
+        );
       }
 
-      if (tx.type === 'CREDIT') totalCredit += tx.amount;
-      if (tx.type === 'DEBIT') totalDebit += tx.amount;
-
-      // Duplicate prevention: O(1) Set lookup instead of O(N) DB queries per transaction
-      if (tx.fitid && existingFitidSet.has(tx.fitid)) {
-        skippedDuplicateCount++;
-        continue;
-      }
-
-      const isPix = tx.isPix;
-      // isPixReturn already declared at line 449
-      const initialStatus = isPixReturn ? 'RETURNED' : 'PENDING';
-      const returnReason = isPixReturn ? 'Detectado automaticamente no extrato como devolução/estorno de Pix' : null;
-      const txId = `tx-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
-
-      // Ensure status is valid
-      const status = ['PENDING', 'RECONCILED', 'IGNORED', 'RETURNED'].includes(initialStatus) 
-        ? initialStatus 
-        : 'PENDING';
-
-      db.run(
-        `INSERT INTO transactions (
-          id, company_id, import_batch_id, bank_name, bank_code, fitid, date, type, amount, original_amount, returned_amount,
-          description, memo, document_number, is_pix, is_pix_return, return_reason, status,
-          counterparty_name, counterparty_doc, raw_data, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          txId,
-          companyId,
-          batchId,
-          finalBankName,
-          finalBankCode,
-          tx.fitid,
-          tx.date,
-          tx.type,
-          tx.amount,
-          tx.amount, // original_amount
-          0, // returned_amount
-          tx.description,
-          tx.memo,
-          tx.documentNumber || null,
-          isPix ? 1 : 0,
-          isPixReturn ? 1 : 0,
-          returnReason,
-          status,
-          tx.counterpartyName || null,
-          tx.counterpartyDoc || null,
-          tx.rawData || null,
-          nowIso
-        ]
-      );
-      importedCount++;
-    }
-
-    // Save batch record inside the same transaction
-    db.run(
-      `INSERT INTO import_batches (
-        id, company_id, filename, bank_name, bank_code, format, total_transactions, total_credit, total_debit,
-        period_start, period_end, imported_by_user_id, imported_by_user_name, imported_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        batchId,
-        companyId,
-        filename,
-        finalBankName,
-        finalBankCode,
-        isOfx ? 'OFX' : 'CSV',
-        importedCount,
-        totalCredit,
-        totalDebit,
-        parsedResult.periodStart || null,
-        parsedResult.periodEnd || null,
-        actorUser.id,
-        actorUser.name,
-        nowIso
-      ]
-    );
-
-    db.run('COMMIT');
+      db.run('COMMIT');
     } catch (txErr) {
       db.run('ROLLBACK');
       throw txErr;
     }
 
-    await persistDatabase();
-    scheduleGoogleDriveAutoSync('statement-upload');
+    if (importedCount > 0) {
+      await persistDatabase();
+      scheduleGoogleDriveAutoSync('statement-upload');
+    }
 
     await logAudit(
       'STATEMENT_IMPORTED',
