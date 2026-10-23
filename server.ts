@@ -11,7 +11,7 @@ import fs from 'fs';
 import { getDatabase, persistDatabase, scheduleSaveDatabase, persistDatabaseSync, getCloudSqlPool, safeCloudSqlQuery, startBackupScheduler, listLocalBackups, createLocalBackup, listSnapshotHistory, loadSnapshotFromHistory, applySnapshotToDatabase, validateSnapshotBuffer, getBootDiagnostics, cleanupDuplicateTransactions } from './server/db.js';
 import { getGoogleDriveSyncStatus, setGoogleDriveWebhookUrl, executeGoogleDriveSync, scheduleGoogleDriveAutoSync } from './server/googleDriveService.js';
 import { parseOfx, isBalanceLine } from './server/parsers/ofxParser.js';
-import { parseCsvStatement } from './server/parsers/csvParser.js';
+import { parseCsvStatement, repairMojibake } from './server/parsers/csvParser.js';
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -841,7 +841,7 @@ export function normalizeBankIdentifier(bankName?: string | null, bankCode?: str
 
 export function normalizeTransactionDescription(desc?: string | null): string {
   if (!desc) return '';
-  return desc
+  return repairMojibake(desc)
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '') // remove accents
     .replace(/[^\w\s]/g, ' ') // replace punctuation/symbols with space
@@ -853,11 +853,11 @@ export function normalizeTransactionDescription(desc?: string | null): string {
 export function normalizeTransactionDoc(val: string | null | undefined): string {
   if (!val) return '';
   let s = String(val).trim();
-  // Strip common bank prefixes: BB-, ITAU-, BRAD-, CEF-, CX-, SANT-, INTER-, NU-, OFX-, CSV-, FIT-
-  s = s.replace(/^(?:BB|ITAU|BRAD|CX|CEF|SANT|INTER|NU|OFX|CSV|FIT)[-_:\s]+/i, '');
+  // Strip common bank prefixes: BB-, ITAU-, BRAD-, CEF-, CX-, SANT-, INTER-, NU-, OFX-, CSV-, FIT-, DOC-
+  s = s.replace(/^(?:BB|ITAU|BRAD|CX|CEF|SANT|INTER|NU|OFX|CSV|FIT|DOC)[-_:\s]+/i, '');
   // Strip non-alphanumeric
   s = s.replace(/[^a-zA-Z0-9]/g, '');
-  // If numeric, strip leading zeros so "00020957353989152" and "20957353989152" match exactly
+  // If numeric, strip leading zeros so "00112881000002133" and "112881000002133" match exactly
   if (/^\d+$/.test(s)) {
     s = s.replace(/^0+/, '');
   }
@@ -1045,6 +1045,11 @@ app.post('/api/statements/upload', async (req, res) => {
           continue; // Skip non-credit non-pix-return transactions
         }
 
+        // Sanitiza textos para evitar qualquer caractere corrompido ou Mojibake
+        tx.description = repairMojibake(tx.description);
+        tx.memo = repairMojibake(tx.memo);
+        if (tx.counterpartyName) tx.counterpartyName = repairMojibake(tx.counterpartyName);
+
         // ── DUPLICATE DETECTION & REUSE (Zero duplicates, reuse existing) ──
         const normDoc = normalizeTransactionDoc(tx.documentNumber);
         const normFitid = normalizeTransactionDoc(tx.fitid);
@@ -1065,16 +1070,22 @@ app.post('/api/statements/upload', async (req, res) => {
           matchedExisting = existingE2eMap.get(txE2e);
         }
 
-        // Tier 2: Check document number or FITID (if present and matches the same bank or company)
+        // Tier 2: Check document number or FITID (mesmo banco, mesma data aproximada e mesmo valor)
         if (!matchedExisting && normDoc && existingDocMap.has(normDoc)) {
           const candidates = existingDocMap.get(normDoc)!;
-          const match = candidates.find(c => normalizeBankIdentifier(c.bank_name, c.bank_code) === incomingBankId && Math.abs(c.amount - tx.amount) < 0.01) || candidates[0];
+          const match = candidates.find(c => 
+            (normalizeBankIdentifier(c.bank_name, c.bank_code) === incomingBankId || !c.bank_code || !incomingBankId) && 
+            Math.abs(c.amount - tx.amount) < 0.01
+          );
           if (match) matchedExisting = match;
         }
 
         if (!matchedExisting && normFitid && existingDocMap.has(normFitid)) {
           const candidates = existingDocMap.get(normFitid)!;
-          const match = candidates.find(c => normalizeBankIdentifier(c.bank_name, c.bank_code) === incomingBankId && Math.abs(c.amount - tx.amount) < 0.01) || candidates[0];
+          const match = candidates.find(c => 
+            (normalizeBankIdentifier(c.bank_name, c.bank_code) === incomingBankId || !c.bank_code || !incomingBankId) && 
+            Math.abs(c.amount - tx.amount) < 0.01
+          );
           if (match) matchedExisting = match;
         }
 
@@ -3290,7 +3301,7 @@ app.post('/api/database/cleanup-duplicates', async (req, res) => {
     const db = await getDatabase();
     const result = cleanupDuplicateTransactions(db);
     if (result.removedCount > 0) {
-      await persistDatabase();
+      await persistDatabase({ allowFewerTransactions: true });
       scheduleGoogleDriveAutoSync('dedup-cleanup');
     }
     res.json({
@@ -3325,7 +3336,7 @@ app.post('/api/database/clean', async (req, res) => {
       db.run(`DELETE FROM drivers WHERE company_id = ?`, [companyId]);
     }
 
-    await persistDatabase();
+    await persistDatabase({ allowFewerTransactions: true });
 
     if (actorUser) {
       await logAudit('DATABASE_CLEANED', 'SYSTEM', 'company_' + companyId, actorUser, {

@@ -8,9 +8,43 @@ import {
   isBalanceLine
 } from './ofxParser.js';
 
+export function repairMojibake(str?: string | null): string {
+  if (!str) return '';
+  let s = String(str);
+  if (/(?:Ã[¡-¿\u0080-\u00BF]|Ã§|Ã£|Ã©|Ã³|Ãª|Ã­|Ãº|Ã¢|Ãµ|Â)/.test(s)) {
+    try {
+      const repaired = Buffer.from(s, 'binary').toString('utf-8');
+      if (!repaired.includes('\uFFFD')) {
+        s = repaired;
+      }
+    } catch {}
+    s = s
+      .replace(/CobranÃ§a/g, 'Cobrança')
+      .replace(/HistÃ³rico/g, 'Histórico')
+      .replace(/TransaÃ§Ã£o/g, 'Transação')
+      .replace(/TransferÃªncia/g, 'Transferência')
+      .replace(/DevoluÃ§Ã£o/g, 'Devolução')
+      .replace(/CrÃ©dito/g, 'Crédito')
+      .replace(/DÃ©bito/g, 'Débito')
+      .replace(/LiquidaÃ§Ã£o/g, 'Liquidação')
+      .replace(/NÃ£o/g, 'Não')
+      .replace(/Ã§/g, 'ç')
+      .replace(/Ã£/g, 'ã')
+      .replace(/Ã©/g, 'é')
+      .replace(/Ã³/g, 'ó')
+      .replace(/Ãª/g, 'ê')
+      .replace(/Ã­/g, 'í')
+      .replace(/Ãº/g, 'ú')
+      .replace(/Ã¢/g, 'â')
+      .replace(/Ãµ/g, 'õ')
+      .replace(/Â/g, '');
+  }
+  return s;
+}
+
 function cleanHeaderCell(str: any): string {
   if (!str) return '';
-  return String(str)
+  return repairMojibake(String(str))
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '') // remove accents (ó -> o, ç -> c, etc.)
     .replace(/[\uFFFD\u0000-\u001F]/g, '') // remove Unicode replacement / control chars
@@ -366,12 +400,12 @@ export function parseCsvStatement(
       date: normalizedDate,
       type,
       amount,
-      description: descToUse,
-      memo: memoToUse,
+      description: repairMojibake(descToUse),
+      memo: repairMojibake(memoToUse),
       documentNumber: !isTrivialDoc ? rawDoc : undefined,
       isPix,
       isPixReturn,
-      counterpartyName,
+      counterpartyName: counterpartyName ? repairMojibake(counterpartyName) : undefined,
       counterpartyDoc,
       rawData
     });

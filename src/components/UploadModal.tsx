@@ -84,20 +84,47 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       setErrorMsg(null);
       setSuccessResult(null);
 
-      let content = await selectedFile.text();
       const isOfx = selectedFile.name.toLowerCase().endsWith('.ofx');
+      let content = '';
 
-      // Se for CSV/TXT e contiver caractere de substituição (\uFFFD), o banco exportou em ISO-8859-1/Windows-1252.
-      // Decodifica com windows-1252 para manter 100% dos acentos e colunas íntegras ("Histórico", "Lançamento", etc.).
-      if (!isOfx && (content.includes('\uFFFD') || /[\u0080-\u00FF]/.test(content))) {
+      // Decodificação inteligente: tenta UTF-8 estrito primeiro (fatal: true).
+      // Se falhar (extratos de bancos como BB/Caixa exportados em Windows-1252 / ISO-8859-1), decodifica como windows-1252.
+      // Isso evita corromper acentos como 'Cobrança' ou 'Histórico' com caracteres estranhos.
+      try {
+        const buffer = await selectedFile.arrayBuffer();
         try {
-          const buffer = await selectedFile.arrayBuffer();
-          const decoder = new TextDecoder('windows-1252');
-          const decoded = decoder.decode(buffer);
-          if (!decoded.includes('\uFFFD')) {
-            content = decoded;
-          }
-        } catch (_) {}
+          const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+          content = utf8Decoder.decode(buffer);
+        } catch {
+          const winDecoder = new TextDecoder('windows-1252');
+          content = winDecoder.decode(buffer);
+        }
+      } catch {
+        content = await selectedFile.text();
+      }
+
+      // Sanitização de segurança contra Mojibake (caso o arquivo já contenha caracteres embaralhados como Ã§, Ã£, etc.)
+      if (/(?:Ã[¡-¿\u0080-\u00BF]|Ã§|Ã£|Ã©|Ã³|Ãª|Ã­|Ãº|Ã¢|Ãµ|Â)/.test(content)) {
+        content = content
+          .replace(/CobranÃ§a/g, 'Cobrança')
+          .replace(/HistÃ³rico/g, 'Histórico')
+          .replace(/TransaÃ§Ã£o/g, 'Transação')
+          .replace(/TransferÃªncia/g, 'Transferência')
+          .replace(/DevoluÃ§Ã£o/g, 'Devolução')
+          .replace(/CrÃ©dito/g, 'Crédito')
+          .replace(/DÃ©bito/g, 'Débito')
+          .replace(/LiquidaÃ§Ã£o/g, 'Liquidação')
+          .replace(/NÃ£o/g, 'Não')
+          .replace(/Ã§/g, 'ç')
+          .replace(/Ã£/g, 'ã')
+          .replace(/Ã©/g, 'é')
+          .replace(/Ã³/g, 'ó')
+          .replace(/Ãª/g, 'ê')
+          .replace(/Ã­/g, 'í')
+          .replace(/Ãº/g, 'ú')
+          .replace(/Ã¢/g, 'â')
+          .replace(/Ãµ/g, 'õ')
+          .replace(/Â/g, '');
       }
 
       const res = await api.uploadStatement({

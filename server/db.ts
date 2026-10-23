@@ -464,7 +464,11 @@ let knownHealthyTxCount = 0;
 // Hash SHA-256 do último buffer salvo com sucesso no Supabase para evitar uploads idênticos redundantes
 let lastUploadedHash = '';
 
-export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
+export interface PersistOptions {
+  allowFewerTransactions?: boolean;
+}
+
+export async function saveSnapshotToCloudSql(buffer: Buffer, options?: PersistOptions): Promise<void> {
   const pool = getCloudSqlPool();
   if (!pool) {
     // No Cloud SQL configured — local-only mode, nothing to persist
@@ -489,18 +493,18 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
     return;
   }
 
-  // SAFETY SHIELD 3: Never allow writing fewer transactions than what is confirmed in Supabase!
+  // SAFETY SHIELD 3: Never allow writing fewer transactions than what is confirmed in Supabase (unless intentionally deduplicating/cleaning)!
   const remoteMeta = await getCloudSnapshotMetadata();
   if (remoteMeta && remoteMeta.exists && remoteMeta.txCount !== null && remoteMeta.txCount > 0) {
-    if (validation.transacoes < remoteMeta.txCount) {
+    if (!options?.allowFewerTransactions && validation.transacoes < remoteMeta.txCount) {
       console.error(
         `[CloudSQL SAFETY SHIELD] BLOCKED: Tentativa de sobrescrever com menos transações ` +
         `(${validation.transacoes} no buffer vs ${remoteMeta.txCount} confirmadas no Supabase). Operação bloqueada.`
       );
       return;
     }
-    knownHealthyTxCount = Math.max(knownHealthyTxCount, remoteMeta.txCount);
-  } else if (knownHealthyTxCount > 0 && validation.transacoes < knownHealthyTxCount) {
+    knownHealthyTxCount = options?.allowFewerTransactions ? validation.transacoes : Math.max(knownHealthyTxCount, remoteMeta.txCount);
+  } else if (!options?.allowFewerTransactions && knownHealthyTxCount > 0 && validation.transacoes < knownHealthyTxCount) {
     console.error(
       `[CloudSQL SAFETY SHIELD] BLOCKED: Tentativa de sobrescrever com menos transações ` +
       `(${validation.transacoes} no buffer vs ${knownHealthyTxCount} conhecidas localmente). Operação bloqueada.`
@@ -570,7 +574,7 @@ export async function saveSnapshotToCloudSql(buffer: Buffer): Promise<void> {
         ).catch(() => {});
 
         knownHealthyRawBytes = buffer.length;
-        knownHealthyTxCount = Math.max(knownHealthyTxCount, validation.transacoes);
+        knownHealthyTxCount = options?.allowFewerTransactions ? validation.transacoes : Math.max(knownHealthyTxCount, validation.transacoes);
         lastUploadedHash = currentHash;
         cloudSnapshotUpdatedMs = Date.now();
         lastCloudCheckMs = Date.now();
@@ -988,9 +992,9 @@ export async function getDatabase(): Promise<Database> {
             `Baixando atualização...`
           );
           shouldDownloadCloud = true;
-        } else if (meta.txCount !== null && meta.txCount > 0 && validateSnapshotBufferSync(localBuf).transacoes < meta.txCount) {
+        } else if (meta.txCount !== null && meta.txCount > 0 && validateSnapshotBufferSync(localBuf).transacoes < meta.txCount && meta.updatedMs > localFileLastWriteMs + 1000) {
           console.log(
-            `[DB] Snapshot do Supabase tem mais transações (${meta.txCount}) que o arquivo local (${validateSnapshotBufferSync(localBuf).transacoes}). ` +
+            `[DB] Snapshot do Supabase tem mais transações (${meta.txCount}) e é mais recente que o arquivo local (${validateSnapshotBufferSync(localBuf).transacoes}). ` +
             `Baixando atualização...`
           );
           shouldDownloadCloud = true;
@@ -1029,16 +1033,16 @@ export async function getDatabase(): Promise<Database> {
             }
           } else {
             const locVal = localHasData && localBuf ? validateSnapshotBufferSync(localBuf) : { usable: false, transacoes: 0 };
-            if (localHasData && locVal.transacoes > snapshotUsable.transacoes) {
+            if (localHasData && (locVal.transacoes > snapshotUsable.transacoes || localFileLastWriteMs > cloudSnapshotUpdatedMs)) {
               console.warn(
-                `[DB] ⚠️ Arquivo local tem mais transações (${locVal.transacoes}) que a nuvem (${snapshotUsable.transacoes}). ` +
+                `[DB] ⚠️ Arquivo local mais recente ou com mais transações (${locVal.transacoes}) que a nuvem (${snapshotUsable.transacoes}). ` +
                 `Preservando o arquivo local e sincronizando com o Supabase.`
               );
               instance = new SQL.Database(localBuf!);
               bootSource = 'local';
               bootSnapshotBytes = localBuf!.length;
               knownHealthyTxCount = locVal.transacoes;
-              persistDatabaseSync();
+              persistDatabaseSync({ allowFewerTransactions: true });
             } else {
               instance = new SQL.Database(cloudBuffer);
               bootSource = 'supabase';
@@ -1215,7 +1219,7 @@ function maybeCreateLocalBackup(reason: string): void {
   createLocalBackup(reason);
 }
 
-export async function persistDatabase(): Promise<void> {
+export async function persistDatabase(options?: PersistOptions): Promise<void> {
   if (!dbInstance) return;
   const data = dbInstance.export();
   const buffer = Buffer.from(data);
@@ -1234,10 +1238,10 @@ export async function persistDatabase(): Promise<void> {
   maybeCreateLocalBackup('auto');
 
   // Save to Cloud SQL (required for persistence across Vercel instances)
-  await saveSnapshotToCloudSql(buffer);
+  await saveSnapshotToCloudSql(buffer, options);
 }
 
-export function persistDatabaseSync(): void {
+export function persistDatabaseSync(options?: PersistOptions): void {
   if (!dbInstance) return;
   try {
     const data = dbInstance.export();
@@ -1250,7 +1254,7 @@ export function persistDatabaseSync(): void {
     maybeCreateLocalBackup('auto');
 
     // Asynchronously synchronize snapshot to Google Cloud SQL permanent storage with safety shield
-    saveSnapshotToCloudSql(buffer);
+    saveSnapshotToCloudSql(buffer, options);
   } catch (err) {
     console.error('[DB] Error persisting database to disk:', err);
   }
@@ -1829,6 +1833,7 @@ function initSchema(db: Database): void {
     const dedupResult = cleanupDuplicateTransactions(db);
     if (dedupResult.removedCount > 0) {
       console.log(`[DB] Limpeza antiduplicidade: ${dedupResult.removedCount} registros duplicados removidos com segurança em ${dedupResult.groupsCount} grupos.`);
+      persistDatabaseSync({ allowFewerTransactions: true });
     }
   } catch (dedupErr) {
     console.error("[DB Deduplication Warning]", dedupErr);
@@ -1847,9 +1852,65 @@ export function cleanupDuplicateTransactions(db: Database): {
   groupsCount: number;
   removedIds: string[];
 } {
+  const repairMojibake = (str?: string | null): string => {
+    if (!str) return '';
+    let s = String(str);
+    if (/(?:Ã[¡-¿\u0080-\u00BF]|Ã§|Ã£|Ã©|Ã³|Ãª|Ã­|Ãº|Ã¢|Ãµ|Â)/.test(s)) {
+      try {
+        const repaired = Buffer.from(s, 'binary').toString('utf-8');
+        if (!repaired.includes('\uFFFD')) {
+          s = repaired;
+        }
+      } catch {}
+      s = s
+        .replace(/CobranÃ§a/g, 'Cobrança')
+        .replace(/HistÃ³rico/g, 'Histórico')
+        .replace(/TransaÃ§Ã£o/g, 'Transação')
+        .replace(/TransferÃªncia/g, 'Transferência')
+        .replace(/DevoluÃ§Ã£o/g, 'Devolução')
+        .replace(/CrÃ©dito/g, 'Crédito')
+        .replace(/DÃ©bito/g, 'Débito')
+        .replace(/LiquidaÃ§Ã£o/g, 'Liquidação')
+        .replace(/NÃ£o/g, 'Não')
+        .replace(/Ã§/g, 'ç')
+        .replace(/Ã£/g, 'ã')
+        .replace(/Ã©/g, 'é')
+        .replace(/Ã³/g, 'ó')
+        .replace(/Ãª/g, 'ê')
+        .replace(/Ã­/g, 'í')
+        .replace(/Ãº/g, 'ú')
+        .replace(/Ã¢/g, 'â')
+        .replace(/Ãµ/g, 'õ')
+        .replace(/Â/g, '');
+    }
+    return s;
+  };
+
+  // Passo 1: Higieniza textos com Mojibake em registros existentes no banco
+  try {
+    const mojibakeRows = db.exec(`
+      SELECT id, description, memo, counterparty_name
+      FROM transactions
+      WHERE description LIKE '%Ã%' OR memo LIKE '%Ã%' OR counterparty_name LIKE '%Ã%'
+    `);
+    if (mojibakeRows.length > 0 && mojibakeRows[0].values) {
+      for (const [id, desc, memo, cpName] of mojibakeRows[0].values) {
+        const newDesc = repairMojibake(desc);
+        const newMemo = repairMojibake(memo);
+        const newCpName = repairMojibake(cpName);
+        db.run(
+          `UPDATE transactions SET description = ?, memo = ?, counterparty_name = ? WHERE id = ?`,
+          [newDesc, newMemo, newCpName, id]
+        );
+      }
+    }
+  } catch (e) {
+    console.error('[DB Mojibake Cleanup Warning]', e);
+  }
+
   const normDesc = (s?: string | null) => {
     if (!s) return '';
-    return s
+    return repairMojibake(s)
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^\w\s]/g, ' ')
@@ -1881,8 +1942,10 @@ export function cleanupDuplicateTransactions(db: Database): {
   const normDoc = (val?: string | null) => {
     if (!val) return '';
     let s = String(val).trim();
-    s = s.replace(/^(?:BB|ITAU|BRAD|CX|CEF|SANT|INTER|NU|OFX|CSV|FIT)[-_:\s]+/i, '');
+    // Remove prefixos bancários e DOC-
+    s = s.replace(/^(?:BB|ITAU|BRAD|CX|CEF|SANT|INTER|NU|OFX|CSV|FIT|DOC)[-_:\s]+/i, '');
     s = s.replace(/[^a-zA-Z0-9]/g, '');
+    // Remove zeros à esquerda para que "00112881000002133" e "112881000002133" sejam 100% idênticos
     if (/^\d+$/.test(s)) {
       s = s.replace(/^0+/, '');
     }
@@ -1904,58 +1967,81 @@ export function cleanupDuplicateTransactions(db: Database): {
   const cols = txs[0].columns;
   const rows = txs[0].values;
 
-  const canonicalGroups = new Map<string, any[]>();
+  // Agrupamentos inteligentes:
+  // 1. Transações com número de documento -> agrupadas por (empresa, banco, data, valor, documento normalizado)
+  // 2. Transações sem número de documento -> agrupadas por (empresa, banco, data, valor, tipo, descrição normalizada)
+  const docGroups = new Map<string, any[]>();
+  const noDocGroups = new Map<string, any[]>();
+
   for (const r of rows) {
     const obj: any = {};
     cols.forEach((c: string, i: number) => (obj[c] = r[i]));
     obj.normDoc = normDoc(obj.document_number);
     obj.normFitid = normDoc(obj.fitid);
 
-    const key = `${obj.company_id}|${normBank(obj.bank_name, obj.bank_code)}|${obj.date}|${Number(obj.amount).toFixed(2)}|${obj.type}|${normDesc(obj.description)}`;
-    if (!canonicalGroups.has(key)) canonicalGroups.set(key, []);
-    canonicalGroups.get(key)!.push(obj);
+    const docKey = obj.normDoc || obj.normFitid;
+    const bId = normBank(obj.bank_name, obj.bank_code);
+    const amt = Number(obj.amount).toFixed(2);
+    const comp = obj.company_id || 'matriz';
+
+    if (docKey) {
+      const key = `${comp}|${bId}|${obj.date}|${amt}|${docKey}`;
+      if (!docGroups.has(key)) docGroups.set(key, []);
+      docGroups.get(key)!.push(obj);
+    } else {
+      const descKey = normDesc(obj.description);
+      const key = `${comp}|${bId}|${obj.date}|${amt}|${obj.type || 'CREDIT'}|${descKey}`;
+      if (!noDocGroups.has(key)) noDocGroups.set(key, []);
+      noDocGroups.get(key)!.push(obj);
+    }
   }
 
   const toDeleteList: any[] = [];
   let groupsCount = 0;
 
-  for (const [, items] of canonicalGroups.entries()) {
-    if (items.length <= 1) continue;
+  const processDuplicates = (items: any[]) => {
+    if (items.length <= 1) return;
 
-    const docSubgroups = new Map<string, any[]>();
-    for (const item of items) {
-      const docKey = item.normDoc || item.normFitid || '__NO_DOC__';
-      if (!docSubgroups.has(docKey)) docSubgroups.set(docKey, []);
-      docSubgroups.get(docKey)!.push(item);
+    groupsCount++;
+    items.sort((a, b) => {
+      // 1. Prioriza transações já conciliadas em sessões
+      const aRec = a.status === 'RECONCILED' || a.session_id ? 1 : 0;
+      const bRec = b.status === 'RECONCILED' || b.session_id ? 1 : 0;
+      if (aRec !== bRec) return bRec - aRec;
+
+      // 2. Prioriza transações vinculadas
+      const aLink = a.linked_tx_id ? 1 : 0;
+      const bLink = b.linked_tx_id ? 1 : 0;
+      if (aLink !== bLink) return bLink - aLink;
+
+      // 3. Prioriza descrições limpas (sem quebras de linha ou ruído)
+      const aCleanDesc = !(a.description || '').includes('\n') ? 1 : 0;
+      const bCleanDesc = !(b.description || '').includes('\n') ? 1 : 0;
+      if (aCleanDesc !== bCleanDesc) return bCleanDesc - aCleanDesc;
+
+      // 4. Prioriza registros com dados mais ricos de contraparte
+      const aScore = (a.counterparty_name ? 1 : 0) + (a.counterparty_doc ? 1 : 0) + (a.memo ? 1 : 0);
+      const bScore = (b.counterparty_name ? 1 : 0) + (b.counterparty_doc ? 1 : 0) + (b.memo ? 1 : 0);
+      if (aScore !== bScore) return bScore - aScore;
+
+      // 5. Registro criado primeiro
+      return String(a.created_at).localeCompare(String(b.created_at));
+    });
+
+    const primary = items[0];
+    const duplicates = items.slice(1);
+
+    for (const dup of duplicates) {
+      toDeleteList.push({ primary, dup });
     }
+  };
 
-    for (const [, subItems] of docSubgroups.entries()) {
-      if (subItems.length > 1) {
-        groupsCount++;
-        subItems.sort((a, b) => {
-          const aRec = a.status === 'RECONCILED' || a.session_id ? 1 : 0;
-          const bRec = b.status === 'RECONCILED' || b.session_id ? 1 : 0;
-          if (aRec !== bRec) return bRec - aRec;
+  for (const [, items] of docGroups.entries()) {
+    processDuplicates(items);
+  }
 
-          const aLink = a.linked_tx_id ? 1 : 0;
-          const bLink = b.linked_tx_id ? 1 : 0;
-          if (aLink !== bLink) return bLink - aLink;
-
-          const aScore = (a.counterparty_name ? 1 : 0) + (a.counterparty_doc ? 1 : 0) + (a.memo ? 1 : 0);
-          const bScore = (b.counterparty_name ? 1 : 0) + (b.counterparty_doc ? 1 : 0) + (b.memo ? 1 : 0);
-          if (aScore !== bScore) return bScore - aScore;
-
-          return String(a.created_at).localeCompare(String(b.created_at));
-        });
-
-        const primary = subItems[0];
-        const duplicates = subItems.slice(1);
-
-        for (const dup of duplicates) {
-          toDeleteList.push({ primary, dup });
-        }
-      }
-    }
+  for (const [, items] of noDocGroups.entries()) {
+    processDuplicates(items);
   }
 
   if (toDeleteList.length === 0) {
