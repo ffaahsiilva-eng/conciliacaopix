@@ -873,7 +873,7 @@ export const SessionsView: React.FC = () => {
                               {(tx.bank_code === '001' || tx.bank_name?.toLowerCase().includes('brasil')) && (
                                 <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-3 w-3 object-contain shrink-0" />
                               )}
-                              {(tx.bank_code === '237' || tx.bank_name?.toLowerCase().includes('bradesco')) && (
+                              {(String(tx.bank_code || '').trim() === '237' || tx.bank_name?.toLowerCase().includes('bradesco')) && (
                                 <img src="/Bradesco.png" alt="Banco Bradesco" className="h-3 w-3 object-contain shrink-0" />
                               )}
                               {tx.bank_name}

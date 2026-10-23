@@ -1207,10 +1207,10 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
                       {/* Bank */}
                       <td className="py-3 px-4 whitespace-nowrap">
                         <div className="flex items-center gap-2">
-                          {(tx.bank_code === '001' || tx.bank_name?.toLowerCase().includes('brasil')) && (
+                          {(['001', '1'].includes(String(tx.bank_code || '').trim()) || tx.bank_name?.toLowerCase().includes('brasil')) && (
                             <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-5 w-5 object-contain shrink-0" />
                           )}
-                          {(tx.bank_code === '237' || tx.bank_name?.toLowerCase().includes('bradesco')) && (
+                          {(String(tx.bank_code || '').trim() === '237' || tx.bank_name?.toLowerCase().includes('bradesco')) && (
                             <img src="/Bradesco.png" alt="Banco Bradesco" className="h-5 w-5 object-contain shrink-0" />
                           )}
                           <div>

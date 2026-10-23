@@ -517,7 +517,7 @@ NEWFILESPEC:NONE
                   >
                     {(b.bank_code === '001' || b.bank_name?.toLowerCase().includes('brasil')) ? (
                       <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-5 w-5 object-contain shrink-0" />
-                    ) : (b.bank_code === '237' || b.bank_name?.toLowerCase().includes('bradesco')) ? (
+                    ) : (String(b.bank_code || '').trim() === '237' || b.bank_name?.toLowerCase().includes('bradesco')) ? (
                       <img src="/Bradesco.png" alt="Banco Bradesco" className="h-5 w-5 object-contain shrink-0" />
                     ) : (
                       <span

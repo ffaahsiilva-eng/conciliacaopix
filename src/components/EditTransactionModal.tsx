@@ -173,7 +173,7 @@ export const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
                   {(transaction.bank_code === '001' || transaction.bank_name?.toLowerCase().includes('brasil')) && (
                     <img src="/bancodobrasil.png" alt="Banco do Brasil" className="h-4 w-4 object-contain shrink-0" />
                   )}
-                  {(transaction.bank_code === '237' || transaction.bank_name?.toLowerCase().includes('bradesco')) && (
+                  {(String(transaction.bank_code || '').trim() === '237' || transaction.bank_name?.toLowerCase().includes('bradesco')) && (
                     <img src="/Bradesco.png" alt="Banco Bradesco" className="h-4 w-4 object-contain shrink-0" />
                   )}
                   <span>{transaction.bank_name}</span>
