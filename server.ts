@@ -60,6 +60,7 @@ app.use(cookieParser());
 // Vercel Serverless Middleware: Ensure DB is loaded before processing API requests
 app.use('/api', async (req, res, next) => {
   if (req.path === '/debug-db') return next(); // Skip DB init for debug
+  if (req.path === '/events' && process.env.VERCEL) return next(); // Skip DB init for disabled SSE on Vercel
   try {
     await getDatabase();
     next();
@@ -123,18 +124,18 @@ app.use('/api', (req, res, next) => {
 
 // SSE Endpoint for real-time cloud sync across all connected operators
 app.get('/api/events', (req: Request, res: Response) => {
-  if (isVercel) {
-    // No Vercel Serverless, manter conexões SSE abertas trava slots de execução lambda,
-    // esgotando o limite de concorrência e forçando cold starts lentos de 5s em cada clique.
-    // Retorna flag isServerless e encerra imediatamente; o frontend usa o polling já existente.
+  if (isVercel || process.env.VERCEL) {
+    // No Vercel Serverless, conexões SSE abertas travam slots de execução lambda,
+    // esgotando limites de GB-horas/concorrência e gerando timeout 504.
+    // Retorna flag isServerless e encerra imediatamente; o frontend encerra o stream.
     res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Cache-Control', 'no-cache, no-transform, no-store');
     res.setHeader('Connection', 'close');
+    res.setHeader('X-SSE-Disabled', 'vercel-serverless');
     res.write(`data: ${JSON.stringify({ type: 'CONNECTED', isServerless: true })}\n\n`);
     res.end();
     return;
   }
-
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -194,7 +195,12 @@ async function cleanupOrphanLocks() {
 }
 
 // Run cleanup periodically every 10 minutes
-setInterval(cleanupOrphanLocks, 10 * 60 * 1000);
+if (!process.env.VERCEL) {
+  const orphanLockTimer = setInterval(cleanupOrphanLocks, 10 * 60 * 1000);
+  if (orphanLockTimer && (orphanLockTimer as any).unref) {
+    (orphanLockTimer as any).unref();
+  }
+}
 
 // Backup automático: garante um ponto de retorno mesmo com o usuário ocioso.
 // Ver startBackupScheduler em server/db.ts (cópia local com retenção + upload

@@ -1895,9 +1895,9 @@ export function cleanupDuplicateTransactions(db: Database): {
     `);
     if (mojibakeRows.length > 0 && mojibakeRows[0].values) {
       for (const [id, desc, memo, cpName] of mojibakeRows[0].values) {
-        const newDesc = repairMojibake(desc);
-        const newMemo = repairMojibake(memo);
-        const newCpName = repairMojibake(cpName);
+        const newDesc = repairMojibake(desc as string);
+        const newMemo = repairMojibake(memo as string);
+        const newCpName = repairMojibake(cpName as string);
         db.run(
           `UPDATE transactions SET description = ?, memo = ?, counterparty_name = ? WHERE id = ?`,
           [newDesc, newMemo, newCpName, id]

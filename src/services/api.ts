@@ -125,15 +125,17 @@ export function setLastSeenDataVersion(version: number): void {
 
 // Estado da conexão SSE, usado para backoff progressivo na reconexão.
 let sseReconnectAttempt = 0;
-let sseWasDisconnected = false;
+let sseConsecutiveFailures = 0;
+let sseDisabled = false;
 
 function connectSse() {
+  if (sseDisabled) return;
   try {
     eventSource = new EventSource('/api/events');
 
     eventSource.onopen = () => {
       sseReconnectAttempt = 0;
-      sseWasDisconnected = false;
+      sseConsecutiveFailures = 0;
     };
 
     eventSource.onmessage = (e) => {
@@ -153,20 +155,22 @@ function connectSse() {
     };
 
     eventSource.onerror = () => {
-      if (!eventSource) return; // Conexão encerrada intencionalmente
+      sseConsecutiveFailures++;
 
-      const wasConnected = sseWasDisconnected;
-      sseWasDisconnected = true;
-
-      eventSource.close();
+      eventSource?.close();
       eventSource = null;
 
       // Backoff exponencial com teto de 15s e jitter. Um retry fixo de 3s
       // gerava rajada de reconexões quando o servidor estava sob carga, e a
       // falta de sinalização fazia a tela ficar desatualizada durante a falha.
-      if (wasConnected) {
-        sseReconnectAttempt = Math.min(sseReconnectAttempt + 1, 5);
+      // Se falhar consecutivamente (ex: ambiente serverless como Vercel que retorna 204/timeout),
+      // desativa o SSE para nunca entrar em loop infinito de reconexões consumindo recursos.
+      if (sseConsecutiveFailures >= 3) {
+        sseDisabled = true;
+        console.warn('[SSE] Conexão em tempo real desativada (ambiente serverless ou indisponível). Sincronização continuará via foco e ações.');
+        return;
       }
+      sseReconnectAttempt = Math.min(sseReconnectAttempt + 1, 5);
       const baseDelay = Math.min(1000 * 2 ** sseReconnectAttempt, 15000);
       const delay = baseDelay + Math.random() * 500;
 

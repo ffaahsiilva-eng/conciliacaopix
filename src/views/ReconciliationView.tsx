@@ -204,10 +204,13 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
   // (document.hidden) e retoma imediatamente ao voltar, evitando gastar
   // requisições em abas em segundo plano.
   useEffect(() => {
-    const POLL_INTERVAL_MS = 8000;
+    const POLL_INTERVAL_MS = 40000;
+    const IDLE_TIMEOUT_MS = 2 * 60 * 1000;
+    let lastActivity = Date.now();
 
     const tick = async () => {
       if (document.hidden) return;
+      if (Date.now() - lastActivity > IDLE_TIMEOUT_MS) return;
       // Usa a versão mais recente de fetchTransactions: um useEffect com []
       // captura a função da primeira renderização, e essa função fecha sobre o
       // `filters` antigo — o polling buscaria com filtros desatualizados e
@@ -218,13 +221,32 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({
     const intervalId = setInterval(tick, POLL_INTERVAL_MS);
 
     // Ao voltar para a aba, sincroniza na hora em vez de esperar o proximo tick.
-    const onVisibilityChange = () => {
-      if (!document.hidden) tick();
+    const onActivity = () => {
+      const wasIdle = Date.now() - lastActivity > IDLE_TIMEOUT_MS;
+      lastActivity = Date.now();
+      if (wasIdle && !document.hidden) {
+        tick();
+      }
     };
+
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        lastActivity = Date.now();
+        tick();
+      }
+    };
+    window.addEventListener('mousemove', onActivity, { passive: true });
+    window.addEventListener('keydown', onActivity, { passive: true });
+    window.addEventListener('click', onActivity, { passive: true });
+    window.addEventListener('focus', onVisibilityChange);
     document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
       clearInterval(intervalId);
+      window.removeEventListener('mousemove', onActivity);
+      window.removeEventListener('keydown', onActivity);
+      window.removeEventListener('click', onActivity);
+      window.removeEventListener('focus', onVisibilityChange);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, []);
